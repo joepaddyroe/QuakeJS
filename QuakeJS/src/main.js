@@ -9,6 +9,7 @@ import { createGpuContext } from './platform/GpuDevice.js';
 import { KeyboardInput } from './platform/KeyboardInput.js';
 import { PointerLook } from './platform/PointerLook.js';
 import { WebGpuRenderer } from './render/WebGpuRenderer.js';
+import { StatusBar } from './ui/StatusBar.js';
 
 /**
  * @param {string} message
@@ -22,9 +23,10 @@ function showError(message) {
 
 async function main() {
   const canvas = /** @type {HTMLCanvasElement|null} */ (document.getElementById('viewport'));
+  const sbarCanvas = /** @type {HTMLCanvasElement|null} */ (document.getElementById('sbar'));
   const hud = document.getElementById('hud');
-  if (!canvas || !hud) {
-    throw new Error('Missing #viewport or #hud');
+  if (!canvas || !hud || !sbarCanvas) {
+    throw new Error('Missing #viewport, #sbar, or #hud');
   }
 
   let gpu;
@@ -55,6 +57,13 @@ async function main() {
   const renderer = new WebGpuRenderer(gpu);
   renderer.init();
 
+  const statusBar = new StatusBar(sbarCanvas);
+  try {
+    await statusBar.load(fs);
+  } catch (err) {
+    console.warn('Status bar load failed:', err);
+  }
+
   const mapCandidates = ['maps/start.bsp', 'maps/e1m1.bsp'];
   let loaded = false;
   let lastErr = '';
@@ -73,7 +82,7 @@ async function main() {
     console.warn('Map load failed, using demo room:', lastErr);
   }
 
-  const host = new Host({ canvas, hud, keyboard, pointer, renderer, fs });
+  const host = new Host({ canvas, hud, keyboard, pointer, renderer, fs, statusBar });
   host.syncPointerFromCamera();
 
   const loop = new GameLoop(host);

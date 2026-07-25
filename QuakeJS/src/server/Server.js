@@ -771,6 +771,40 @@ export class Server {
   }
 
   /**
+   * Client stats for status bar (cl.stats / items subset).
+   * @param {number} [ent=1]
+   * @returns {{
+   *   health: number,
+   *   armor: number,
+   *   ammo: number,
+   *   items: number,
+   *   weapon: number,
+   *   shells: number,
+   *   nails: number,
+   *   rockets: number,
+   *   cells: number,
+   *   time: number,
+   * } | null}
+   */
+  getClientStats(ent = 1) {
+    const f = this.progs.f;
+    const edicts = this.edicts;
+    if (edicts.free[ent]) return null;
+    return {
+      health: edicts.getFloat(ent, f.health) | 0,
+      armor: edicts.getFloat(ent, f.armorvalue) | 0,
+      ammo: edicts.getFloat(ent, f.currentammo) | 0,
+      items: edicts.getFloat(ent, f.items) | 0,
+      weapon: edicts.getFloat(ent, f.weapon) | 0,
+      shells: edicts.getFloat(ent, f.ammo_shells) | 0,
+      nails: edicts.getFloat(ent, f.ammo_nails) | 0,
+      rockets: edicts.getFloat(ent, f.ammo_rockets) | 0,
+      cells: edicts.getFloat(ent, f.ammo_cells) | 0,
+      time: this.time,
+    };
+  }
+
+  /**
    * Copy QC-side changes (teleport setorigin / fixangle / velocity) back to the local player.
    * @param {number} ent
    * @param {{ origin: Float32Array, velocity: Float32Array, pitch: number, yaw: number, onground: boolean, _smoothZ?: number }} player

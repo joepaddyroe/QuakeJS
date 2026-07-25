@@ -15,14 +15,16 @@ export class Host {
    * @param {import('../platform/PointerLook.js').PointerLook} deps.pointer
    * @param {import('../render/WebGpuRenderer.js').WebGpuRenderer} deps.renderer
    * @param {import('../fs/FileSystem.js').FileSystem} deps.fs
+   * @param {import('../ui/StatusBar.js').StatusBar} [deps.statusBar]
    */
-  constructor({ canvas, hud, keyboard, pointer, renderer, fs }) {
+  constructor({ canvas, hud, keyboard, pointer, renderer, fs, statusBar = null }) {
     this._canvas = canvas;
     this._hud = hud;
     this._keyboard = keyboard;
     this._pointer = pointer;
     this._renderer = renderer;
     this._fs = fs;
+    this._statusBar = statusBar;
     this._fpsAccum = 0;
     this._fpsFrames = 0;
     this._fps = 0;
@@ -172,6 +174,12 @@ export class Host {
     }
 
     this._renderer.frame(width, height, dt);
+
+    if (this._statusBar) {
+      const stats =
+        worldMode && server && !intermission ? server.getClientStats(1) : null;
+      this._statusBar.draw(stats);
+    }
 
     this._fpsAccum += dt;
     this._fpsFrames += 1;
