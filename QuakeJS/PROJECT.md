@@ -516,6 +516,7 @@ User supplies a legally obtained Quake `id1` directory (at least `pak0.pak`). Fi
 | 2026-07-25 | **Brush collision:** clip player vs SOLID_BSP `*N` hulls (fixes fall-through under `func_bossgate` after start teleporters) |
 | 2026-07-25 | **Changelevel:** builtin #70 + `Host.changeMap`; PlayerPreThink/buttons; touch episode exits to load `e1m1` etc. |
 | 2026-07-25 | **Doors/buttons:** SV_Impact on brush bumps (func_button); hitscan for shootable secret doors; walk-up door fields already via SOLID_TRIGGER |
+| 2026-07-25 | **Pushers:** SV_PushMove subset carries local player on plats/doors; `groundEntity`; brush `startsolid` merge; refresh brushes while pushers move |
 
 ---
 

@@ -103,6 +103,7 @@ export class Host {
           mins: PLAYER_MINS,
           maxs: PLAYER_MAXS,
           onground: player.onground,
+          groundEntity: player.groundEntity,
         });
         server.runClientThink(1, { attack, jump });
         server.applyClientEdict(1, player);
@@ -133,8 +134,9 @@ export class Host {
             server.fireHitscan(1, eye, player.pitch, player.yaw, 20);
           }
         }
-        server.physics(frameDt);
+        server.physics(frameDt, player);
         if (!intermission) {
+          // Player may have been carried by a plat/door — sync that origin
           server.syncClientEdict(1, {
             origin: player.origin,
             velocity: player.velocity,
@@ -143,6 +145,7 @@ export class Host {
             mins: PLAYER_MINS,
             maxs: PLAYER_MAXS,
             onground: player.onground,
+            groundEntity: player.groundEntity,
           });
           server.touchTriggers(player.origin, PLAYER_MINS, PLAYER_MAXS, 1);
           const applied = server.applyClientEdict(1, player);

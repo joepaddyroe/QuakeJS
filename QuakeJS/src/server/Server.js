@@ -27,6 +27,7 @@ import { createBuiltins } from '../progs/Builtins.js';
 import { OFS_PARM0 } from '../progs/Progs.js';
 import { angleVectors } from '../math/QuakeMath.js';
 import { World } from './World.js';
+import { PLAYER_MINS, PLAYER_MAXS } from './PlayerMove.js';
 
 /**
  * @param {string} data
@@ -353,8 +354,9 @@ export class Server {
 
   /**
    * @param {number} frametime
+   * @param {import('./PlayerMove.js').PlayerMove | null} [player] local player to ride pushers
    */
-  physics(frametime) {
+  physics(frametime, player = null) {
     const progs = this.progs;
     const edicts = this.edicts;
     const gi = progs.globalsI;
@@ -366,6 +368,9 @@ export class Server {
     gf[ofs.frametime] = frametime;
     gf[ofs.time] = this.time;
     edicts.time = this.time;
+
+    // Keep brush clip origins in sync while pushers move this frame
+    this.world.brushes = this.getBrushDrawList();
 
     // StartFrame
     const startFrame = gi[ofs.StartFrame];
@@ -388,7 +393,7 @@ export class Server {
       const movetype = edicts.getFloat(e, f.movetype) | 0;
       switch (movetype) {
         case MOVETYPE_PUSH:
-          this._physicsPusher(e, frametime);
+          this._physicsPusher(e, frametime, player);
           break;
         case MOVETYPE_NONE:
           this._runThink(e, frametime);
@@ -438,10 +443,12 @@ export class Server {
   }
 
   /**
+   * SV_Physics_Pusher + SV_PushMove subset — move brush, carry local player.
    * @param {number} ent
    * @param {number} frametime
+   * @param {import('./PlayerMove.js').PlayerMove | null} [player]
    */
-  _physicsPusher(ent, frametime) {
+  _physicsPusher(ent, frametime, player = null) {
     const f = this.progs.f;
     const edicts = this.edicts;
     let movetime = frametime;
@@ -453,17 +460,60 @@ export class Server {
     }
 
     const vel = edicts.getVec(ent, f.velocity);
-    if (vel[0] || vel[1] || vel[2]) {
-      const o = edicts.getVec(ent, f.origin);
-      edicts.setVec(ent, f.origin, [
-        o[0] + vel[0] * movetime,
-        o[1] + vel[1] * movetime,
-        o[2] + vel[2] * movetime,
-      ]);
-      edicts.linkAbs(ent);
-    }
-    edicts.setFloat(ent, f.ltime, ltime + movetime);
+    const move = [vel[0] * movetime, vel[1] * movetime, vel[2] * movetime];
 
+    if (!move[0] && !move[1] && !move[2]) {
+      edicts.setFloat(ent, f.ltime, ltime + movetime);
+      this._pusherTryThink(ent, nextthink);
+      return;
+    }
+
+    const pushorig = edicts.getVec(ent, f.origin);
+    const pushorigCopy = [pushorig[0], pushorig[1], pushorig[2]];
+
+    edicts.setVec(ent, f.origin, [
+      pushorig[0] + move[0],
+      pushorig[1] + move[1],
+      pushorig[2] + move[2],
+    ]);
+    edicts.linkAbs(ent);
+    edicts.setFloat(ent, f.ltime, ltime + movetime);
+    this.world.brushes = this.getBrushDrawList();
+
+    if (player && !player.noclip) {
+      const ok = this._pushLocalPlayer(ent, move, player);
+      if (!ok) {
+        edicts.setVec(ent, f.origin, pushorigCopy);
+        edicts.linkAbs(ent);
+        edicts.setFloat(ent, f.ltime, ltime);
+        this.world.brushes = this.getBrushDrawList();
+
+        const blocked = edicts.getInt(ent, f.blocked);
+        if (blocked) {
+          this.progs.globalsI[this.progs.ofs.self] = ent;
+          this.progs.globalsI[this.progs.ofs.other] = 1;
+          this.progs.globalsF[this.progs.ofs.time] = this.time;
+          try {
+            this.exec.execute(blocked);
+          } catch (err) {
+            this.exec.reset();
+            console.error(`blocked ${ent}`, err);
+          }
+        }
+        return;
+      }
+    }
+
+    this._pusherTryThink(ent, nextthink);
+  }
+
+  /**
+   * @param {number} ent
+   * @param {number} nextthink
+   */
+  _pusherTryThink(ent, nextthink) {
+    const f = this.progs.f;
+    const edicts = this.edicts;
     if (nextthink > 0 && nextthink <= edicts.getFloat(ent, f.ltime)) {
       edicts.setFloat(ent, f.nextthink, 0);
       const think = edicts.getInt(ent, f.think);
@@ -474,10 +524,86 @@ export class Server {
         try {
           this.exec.execute(think);
         } catch (err) {
+          this.exec.reset();
           console.error(`push think ${ent}`, err);
         }
+        this.world.brushes = this.getBrushDrawList();
       }
     }
+  }
+
+  /**
+   * Carry / shove local player with a moving SOLID_BSP pusher (SV_PushMove subset).
+   * @param {number} pusher
+   * @param {number[]} move
+   * @param {import('./PlayerMove.js').PlayerMove} player
+   * @returns {boolean} false if move blocked
+   */
+  _pushLocalPlayer(pusher, move, player) {
+    const f = this.progs.f;
+    const edicts = this.edicts;
+
+    const onPusher = player.onground && (player.groundEntity | 0) === pusher;
+
+    if (!onPusher) {
+      const pmin = [
+        player.origin[0] + PLAYER_MINS[0],
+        player.origin[1] + PLAYER_MINS[1],
+        player.origin[2] + PLAYER_MINS[2],
+      ];
+      const pmax = [
+        player.origin[0] + PLAYER_MAXS[0],
+        player.origin[1] + PLAYER_MAXS[1],
+        player.origin[2] + PLAYER_MAXS[2],
+      ];
+      const bmin = edicts.getVec(pusher, f.absmin);
+      const bmax = edicts.getVec(pusher, f.absmax);
+      const overlaps = !(
+        pmin[0] >= bmax[0] ||
+        pmin[1] >= bmax[1] ||
+        pmin[2] >= bmax[2] ||
+        pmax[0] <= bmin[0] ||
+        pmax[1] <= bmin[1] ||
+        pmax[2] <= bmin[2]
+      );
+      if (!overlaps) return true;
+      if (!this.world.testPlayerPosition(player.origin, PLAYER_MINS, PLAYER_MAXS, 0)) {
+        return true;
+      }
+    }
+
+    const oldOrg = [player.origin[0], player.origin[1], player.origin[2]];
+    const oldSmooth = player._smoothZ;
+
+    const end = new Float32Array([
+      player.origin[0] + move[0],
+      player.origin[1] + move[1],
+      player.origin[2] + move[2],
+    ]);
+    const savedBrushes = this.world.brushes;
+    this.world.brushes = savedBrushes.filter((b) => b.edict !== pusher);
+    const tr = this.world.playerMove(player.origin, end, PLAYER_MINS, PLAYER_MAXS);
+    this.world.brushes = savedBrushes;
+
+    player.origin[0] = tr.endpos[0];
+    player.origin[1] = tr.endpos[1];
+    player.origin[2] = tr.endpos[2];
+    player._smoothZ = player.origin[2];
+
+    // Test with pusher non-solid (SV_PushMove sets SOLID_NOT around the test)
+    if (this.world.testPlayerPosition(player.origin, PLAYER_MINS, PLAYER_MAXS, pusher)) {
+      player.origin[0] = oldOrg[0];
+      player.origin[1] = oldOrg[1];
+      player.origin[2] = oldOrg[2];
+      player._smoothZ = oldSmooth;
+      return false;
+    }
+
+    if (onPusher || move[2] > 0) {
+      player.onground = true;
+      player.groundEntity = pusher;
+    }
+    return true;
   }
 
   /**
@@ -522,7 +648,7 @@ export class Server {
    * Mirror local player into reserved client edict (svs.clients[0] → edict 1).
    * QuakeC teleports/triggers require classname "player", health > 0, SOLID_SLIDEBOX.
    * @param {number} ent
-   * @param {{ origin: Float32Array|number[], velocity?: Float32Array|number[], pitch?: number, yaw?: number, mins?: Float32Array|number[], maxs?: Float32Array|number[], health?: number, onground?: boolean }} player
+   * @param {{ origin: Float32Array|number[], velocity?: Float32Array|number[], pitch?: number, yaw?: number, mins?: Float32Array|number[], maxs?: Float32Array|number[], health?: number, onground?: boolean, groundEntity?: number }} player
    */
   syncClientEdict(ent, player) {
     const f = this.progs.f;
@@ -545,6 +671,7 @@ export class Server {
     let flags = FL_CLIENT;
     if (player.onground) flags |= FL_ONGROUND;
     edicts.setFloat(ent, f.flags, flags);
+    edicts.setInt(ent, f.groundentity, player.groundEntity | 0);
     edicts.linkAbs(ent);
   }
 

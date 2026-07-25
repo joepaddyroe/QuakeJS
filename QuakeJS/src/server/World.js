@@ -119,12 +119,42 @@ export class World {
         mns,
         mxs,
       );
-      if (tr.allsolid || tr.fraction < trace.fraction) {
+      // Match SV_ClipToLinks: allsolid | startsolid | closer fraction
+      if (tr.allsolid || tr.startsolid || tr.fraction < trace.fraction) {
+        if (trace.startsolid) tr.startsolid = true;
         tr.ent = be.edict || 0;
         trace = tr;
+      } else if (tr.startsolid) {
+        trace.startsolid = true;
       }
     }
     return trace;
+  }
+
+  /**
+   * Refresh brush origins from a list (after pushers move mid-frame).
+   * @param {{ submodel: number, origin: Float32Array, edict?: number }[]} list
+   */
+  setBrushes(list) {
+    this.brushes = list;
+  }
+
+  /**
+   * Point-sample: is a player-sized box startsolid somewhere?
+   * @param {Float32Array|number[]} origin
+   * @param {Float32Array|number[]} mins
+   * @param {Float32Array|number[]} maxs
+   * @param {number} [ignoreEdict] skip this brush edict (pusher set SOLID_NOT)
+   * @returns {boolean}
+   */
+  testPlayerPosition(origin, mins, maxs, ignoreEdict = 0) {
+    const saved = this.brushes;
+    if (ignoreEdict) {
+      this.brushes = saved.filter((b) => b.edict !== ignoreEdict);
+    }
+    const tr = this.playerMove(origin, origin, mins, maxs);
+    this.brushes = saved;
+    return !!(tr.startsolid || tr.allsolid);
   }
 
   /**

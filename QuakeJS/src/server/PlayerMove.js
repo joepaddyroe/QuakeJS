@@ -55,6 +55,7 @@ export class PlayerMove {
     this.pitch = 0;
     this.yaw = 0;
     this.onground = false;
+    this.groundEntity = 0;
     this.noclip = false;
     this.jumpReleased = true;
     this.viewOfsZ = VIEW_OFS_Z;
@@ -74,6 +75,7 @@ export class PlayerMove {
     this.yaw = angles[1] || 0;
     this.velocity[0] = this.velocity[1] = this.velocity[2] = 0;
     this.onground = false;
+    this.groundEntity = 0;
     this.jumpReleased = true;
     this._smoothZ = origin[2];
   }
@@ -314,6 +316,7 @@ export class PlayerMove {
   _walkMove(dt) {
     const oldonground = this.onground;
     this.onground = false;
+    this.groundEntity = 0;
 
     const oldorg = new Float32Array(this.origin);
     const oldvel = new Float32Array(this.velocity);
@@ -353,6 +356,7 @@ export class PlayerMove {
 
     if (tr.plane.normal[2] > 0.7) {
       this.onground = true;
+      this.groundEntity = tr.ent || 0;
     } else {
       this.origin.set(nosteporg);
       this.velocity.set(nostepvel);
@@ -398,6 +402,7 @@ export class PlayerMove {
       if (trace.plane.normal[2] > 0.7) {
         blocked |= 1;
         this.onground = true;
+        this.groundEntity = trace.ent || 0;
       }
       if (!trace.plane.normal[2]) blocked |= 2;
 
