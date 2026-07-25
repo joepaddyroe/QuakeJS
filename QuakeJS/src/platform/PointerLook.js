@@ -43,6 +43,14 @@ export class PointerLook {
     return this._locked;
   }
 
+  /** Release pointer lock (e.g. when opening console). */
+  exitLock() {
+    if (document.pointerLockElement === this._canvas) {
+      document.exitPointerLock?.();
+    }
+    this.attack = false;
+  }
+
   attach() {
     this._canvas.addEventListener('click', this._onClick);
     document.addEventListener('pointerlockchange', this._onLockChange);

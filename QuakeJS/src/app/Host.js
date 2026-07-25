@@ -6,6 +6,10 @@
 import { syncCanvasSize } from '../platform/GpuDevice.js';
 import { PLAYER_MINS, PLAYER_MAXS } from '../server/PlayerMove.js';
 import { angleVectors } from '../math/QuakeMath.js';
+import { Cmd } from '../core/Cmd.js';
+import { CvarStore } from '../core/Cvar.js';
+import { Console } from '../ui/Console.js';
+import { registerHostCommands } from '../ui/HostCmds.js';
 
 export class Host {
   /**
@@ -18,8 +22,19 @@ export class Host {
    * @param {import('../fs/FileSystem.js').FileSystem} deps.fs
    * @param {import('../ui/StatusBar.js').StatusBar} [deps.statusBar]
    * @param {import('../audio/SoundSystem.js').SoundSystem} [deps.sound]
+   * @param {HTMLElement} [deps.consoleRoot]
    */
-  constructor({ canvas, hud, keyboard, pointer, renderer, fs, statusBar = null, sound = null }) {
+  constructor({
+    canvas,
+    hud,
+    keyboard,
+    pointer,
+    renderer,
+    fs,
+    statusBar = null,
+    sound = null,
+    consoleRoot = document.body,
+  }) {
     this._canvas = canvas;
     this._hud = hud;
     this._keyboard = keyboard;
@@ -33,7 +48,35 @@ export class Host {
     this._fps = 0;
     this._noclipWasDown = false;
     this._attackWasDown = false;
-    this._soundUnlockBound = false;
+
+    this.cmd = new Cmd();
+    this.cvars = new CvarStore();
+    this.con = new Console(consoleRoot);
+
+    registerHostCommands({
+      cmd: this.cmd,
+      cvars: this.cvars,
+      con: this.con,
+      host: this,
+      sound: this._sound,
+    });
+
+    this._onKeyDown = (e) => {
+      // Toggle console even when closed
+      if (e.code === 'Backquote') {
+        const wasOpen = this.con.isOpen;
+        this.con.handleKey(e, (line) => this._execConsole(line));
+        if (this.con.isOpen && !wasOpen) {
+          this._pointer.exitLock();
+          this._keyboard._down.clear();
+        }
+        return;
+      }
+      if (this.con.isOpen) {
+        this.con.handleKey(e, (line) => this._execConsole(line));
+      }
+    };
+    window.addEventListener('keydown', this._onKeyDown, true);
 
     if (this._sound && this._canvas) {
       const unlock = () => {
@@ -41,8 +84,38 @@ export class Host {
       };
       this._canvas.addEventListener('pointerdown', unlock, { once: false });
       window.addEventListener('keydown', unlock, { once: false });
-      this._soundUnlockBound = true;
     }
+
+    this.con.print('Ready. ` opens console — try "map e1m1" or "help".\n');
+  }
+
+  /**
+   * @param {string} line
+   */
+  _execConsole(line) {
+    this.cmd.addText(line);
+    this.cmd.executeBuffer(
+      (args) => this._handleCvarArgs(args),
+      (msg) => this.con.print(msg),
+    );
+  }
+
+  /**
+   * Vanilla: typing `cvar` prints value; `cvar val` sets.
+   * @param {string[]} args
+   * @returns {boolean}
+   */
+  _handleCvarArgs(args) {
+    if (!args.length) return false;
+    const v = this.cvars.find(args[0]);
+    if (!v) return false;
+    if (args.length === 1) {
+      this.con.print(`"${v.name}" is "${v.string}"\n`);
+      return true;
+    }
+    this.cvars.set(v.name, args.slice(1).join(' '));
+    this.con.print(`"${v.name}" set to "${v.string}"\n`);
+    return true;
   }
 
   /**
@@ -62,9 +135,11 @@ export class Host {
   changeMap(mapName) {
     const path = `maps/${mapName}.bsp`;
     if (!this._fs.has(path)) {
+      this.con.print(`map not found: ${path}\n`);
       console.error(`[host] map not found: ${path}`);
       return;
     }
+    this.con.print(`[host] loading ${path}\n`);
     console.info(`[host] loading ${path}`);
     this._renderer.loadMap(this._fs, path, this._sound);
     this.syncPointerFromCamera();
@@ -79,6 +154,7 @@ export class Host {
     const player = this._renderer.player;
     const kb = this._keyboard;
     const server = this._renderer.server;
+    const consoleOpen = this.con.isOpen;
 
     // Pending changelevel from QuakeC
     if (server?.pendingMap) {
@@ -88,8 +164,12 @@ export class Host {
       return;
     }
 
-    // Toggle noclip with N
-    const nDown = kb.isDown('KeyN');
+    // Apply sensitivity cvar → pointer
+    const sens = this.cvars.value('sensitivity');
+    if (sens > 0) this._pointer.sensitivity = 0.04 * sens;
+
+    // Toggle noclip with N (game only)
+    const nDown = !consoleOpen && kb.isDown('KeyN');
     if (worldMode && player && nDown && !this._noclipWasDown) {
       player.noclip = !player.noclip;
     }
@@ -97,7 +177,7 @@ export class Host {
 
     const intermission = !!(server && server.isIntermission());
 
-    if (worldMode && player) {
+    if (worldMode && player && !consoleOpen) {
       // Clip against doors/walls/bossgates
       if (server && this._renderer.collision) {
         this._renderer.collision.brushes = server.getBrushDrawList();
@@ -141,7 +221,6 @@ export class Host {
       if (server) {
         const frameDt = Math.min(dt, 0.1);
         if (!intermission) {
-          // SV_Impact on brush bumps (func_button SOLID_BSP touch)
           server.impactTouches(1, player.impactedEdicts);
           server.bumpOpenDoors(1, player.impactedEdicts);
           if (attackPressed) {
@@ -161,7 +240,6 @@ export class Host {
             onground: player.onground,
             groundEntity: player.groundEntity,
           });
-          // SV_LinkEdict(..., true) — touch SOLID_TRIGGER once after move (not twice)
           server.touchTriggers(player.origin, PLAYER_MINS, PLAYER_MAXS, 1);
           const applied = server.applyClientEdict(1, player);
           if (applied.fixangle) {
@@ -170,7 +248,7 @@ export class Host {
           }
         }
       }
-    } else {
+    } else if (!consoleOpen) {
       const cam = this._renderer.camera;
       cam.setAngles(
         (this._pointer.yaw * Math.PI) / 180,
@@ -184,6 +262,13 @@ export class Host {
         up: kb.isDown('Space'),
         down: kb.isDown('ControlLeft') || kb.isDown('ControlRight') || kb.isDown('KeyC'),
       });
+    } else if (worldMode && player && server) {
+      // Keep server ticking while console is open (doors mid-move, etc.)
+      const frameDt = Math.min(dt, 0.1);
+      if (this._renderer.collision) {
+        this._renderer.collision.brushes = server.getBrushDrawList();
+      }
+      server.physics(frameDt, player);
     }
 
     this._renderer.frame(width, height, dt);
@@ -237,12 +322,13 @@ export class Host {
         `\n` +
         (intermission
           ? `Level complete — click / jump to continue\n`
-          : `WASD move   Space jump   click shoot   N noclip\n`) +
+          : `WASD move   Space jump   click shoot   N noclip   \` console\n`) +
         `${lockHint}`;
     } else {
       this._hud.textContent =
         `QuakeJS — demo room (fallback)\n` +
         `FPS ${this._fps.toFixed(0)}\n` +
+        `\` console\n` +
         `${lockHint}`;
     }
   }

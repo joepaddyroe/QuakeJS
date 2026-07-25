@@ -112,6 +112,15 @@ export class SoundSystem {
     this._autoSeq = 0;
   }
 
+  /**
+   * Master volume 0..1 (cvar `volume`).
+   * @param {number} v
+   */
+  setVolume(v) {
+    this._volume = Math.max(0, Math.min(1, v));
+    if (this._master) this._master.gain.value = this._volume;
+  }
+
   /** Ensure AudioContext exists (may still be suspended until gesture). */
   _ensureCtx() {
     if (this._ctx) return this._ctx;

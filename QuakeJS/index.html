@@ -41,6 +41,49 @@
       pointer-events: none;
       display: none;
     }
+    #console-panel {
+      display: none;
+      position: fixed;
+      left: 0;
+      right: 0;
+      top: 0;
+      height: 45%;
+      flex-direction: column;
+      background: rgba(12, 10, 8, 0.92);
+      border-bottom: 2px solid #5a5040;
+      color: #d4cfc4;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 14px;
+      line-height: 1.35;
+      z-index: 20;
+      padding: 8px 12px 6px;
+      box-sizing: border-box;
+    }
+    #console-log {
+      flex: 1;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin-bottom: 6px;
+    }
+    #console-input-row {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      border-top: 1px solid #3a342c;
+      padding-top: 6px;
+      color: #f0e6d8;
+    }
+    #console-input {
+      white-space: pre;
+    }
+    #console-caret {
+      animation: blink 1s step-end infinite;
+      color: #c8b070;
+    }
+    @keyframes blink {
+      50% { opacity: 0; }
+    }
     #hud .dim { color: #7a766c; }
     #error {
       display: none;
