@@ -120,6 +120,38 @@ export function mat4Translate(x, y, z) {
 }
 
 /**
+ * Rotation about X (Quake roll), radians.
+ * @param {number} rad
+ * @returns {Float32Array}
+ */
+export function mat4RotateX(rad) {
+  const c = Math.cos(rad);
+  const s = Math.sin(rad);
+  const out = mat4Identity();
+  out[5] = c;
+  out[6] = s;
+  out[9] = -s;
+  out[10] = c;
+  return out;
+}
+
+/**
+ * Rotation about Y (Quake pitch axis in R_RotateForEntity), radians.
+ * @param {number} rad
+ * @returns {Float32Array}
+ */
+export function mat4RotateY(rad) {
+  const c = Math.cos(rad);
+  const s = Math.sin(rad);
+  const out = mat4Identity();
+  out[0] = c;
+  out[2] = -s;
+  out[8] = s;
+  out[10] = c;
+  return out;
+}
+
+/**
  * Rotation about Z (Quake yaw), radians.
  * @param {number} yawRad
  * @returns {Float32Array}
@@ -133,4 +165,26 @@ export function mat4RotateZ(yawRad) {
   out[4] = -s;
   out[5] = c;
   return out;
+}
+
+/**
+ * R_RotateForEntity — translate then yaw / -pitch / roll (degrees).
+ * @param {Float32Array|number[]} origin
+ * @param {number} pitchDeg
+ * @param {number} yawDeg
+ * @param {number} [rollDeg=0]
+ * @returns {Float32Array}
+ */
+export function mat4Entity(origin, pitchDeg, yawDeg, rollDeg = 0) {
+  const deg = Math.PI / 180;
+  return mat4Multiply(
+    mat4Multiply(
+      mat4Multiply(
+        mat4Translate(origin[0], origin[1], origin[2]),
+        mat4RotateZ(yawDeg * deg),
+      ),
+      mat4RotateY(-pitchDeg * deg),
+    ),
+    mat4RotateX(rollDeg * deg),
+  );
 }

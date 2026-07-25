@@ -1,8 +1,14 @@
 /**
  * WebGPU alias (MDL) entity draw — textured triangles, yaw + origin.
+ *
+ * Important: do NOT queue.writeBuffer a shared uniform between encoded draws and
+ * then submit once — all writes land before the CB runs, so every draw gets the
+ * last matrix (enemies stacked on the view weapon / camera). Copy uniforms
+ * inside the command encoder instead.
  */
 
 import { AliasModel } from './models/AliasModel.js';
+import { angleVectors } from '../math/QuakeMath.js';
 import {
   mat4LookAt,
   mat4Multiply,
@@ -38,10 +44,11 @@ fn vsMain(input : VSIn) -> VSOut {
 fn fsMain(input : VSOut) -> @location(0) vec4f {
   let c = textureSample(tex, samp, input.uv);
   if (c.a < 0.1) { discard; }
-  // Flat shade boost (no lightnormals yet)
   return vec4f(c.rgb * 0.9, 1.0);
 }
 `;
+
+const MAT4_BYTES = 64;
 
 /**
  * @typedef {{ model: string, origin: Float32Array, yaw: number, frame: number }} AliasDrawEnt
@@ -57,15 +64,27 @@ export class AliasRenderer {
     this._format = format;
     /** @type {GPURenderPipeline|null} */
     this._pipeline = null;
+    /** @type {GPURenderPipeline|null} */
+    this._viewPipeline = null;
+    /** @type {GPUBindGroupLayout|null} */
+    this._bindGroupLayout = null;
     /** @type {GPUSampler|null} */
     this._sampler = null;
+    /** Live uniform read by world-alias shaders */
     /** @type {GPUBuffer|null} */
     this._uniform = null;
+    /** Dedicated view-weapon uniform (single draw — no staging race with aliases) */
+    /** @type {GPUBuffer|null} */
+    this._viewUniform = null;
+    /** Staging: one mat4 per world-alias draw, copied into _uniform inside the encoder */
+    /** @type {GPUBuffer|null} */
+    this._matrixStaging = null;
+    this._matrixStagingCapacity = 0;
     /** @type {import('../fs/FileSystem.js').FileSystem|null} */
     this._fs = null;
     /** @type {Uint8Array|null} */
     this._palette = null;
-    /** @type {Map<string, { model: AliasModel, texture: GPUTexture, bindGroup: GPUBindGroup, frameCache: Map<number, { vbo: GPUBuffer, vertCount: number }> }>} */
+    /** @type {Map<string, { model: AliasModel, texture: GPUTexture, bindGroup: GPUBindGroup, viewBindGroup: GPUBindGroup, frameCache: Map<number, { vbo: GPUBuffer, vertCount: number }> }>} */
     this._cache = new Map();
   }
 
@@ -77,47 +96,114 @@ export class AliasRenderer {
       minFilter: 'nearest',
     });
     this._uniform = device.createBuffer({
-      size: 64,
+      size: MAT4_BYTES,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
-    this._pipeline = device.createRenderPipeline({
-      layout: 'auto',
-      vertex: {
-        module,
-        entryPoint: 'vsMain',
-        buffers: [
-          {
-            arrayStride: 20,
-            attributes: [
-              { shaderLocation: 0, offset: 0, format: 'float32x3' },
-              { shaderLocation: 1, offset: 12, format: 'float32x2' },
-            ],
-          },
-        ],
-      },
-      fragment: {
-        module,
-        entryPoint: 'fsMain',
-        targets: [
-          {
-            format: this._format,
-            blend: {
-              color: {
-                srcFactor: 'src-alpha',
-                dstFactor: 'one-minus-src-alpha',
-              },
-              alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
+    this._viewUniform = device.createBuffer({
+      size: MAT4_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    const vertex = {
+      module,
+      entryPoint: 'vsMain',
+      buffers: [
+        {
+          arrayStride: 20,
+          attributes: [
+            { shaderLocation: 0, offset: 0, format: 'float32x3' },
+            { shaderLocation: 1, offset: 12, format: 'float32x2' },
+          ],
+        },
+      ],
+    };
+    const fragment = {
+      module,
+      entryPoint: 'fsMain',
+      targets: [
+        {
+          format: this._format,
+          blend: {
+            color: {
+              srcFactor: 'src-alpha',
+              dstFactor: 'one-minus-src-alpha',
             },
+            alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha' },
           },
-        ],
-      },
-      primitive: { topology: 'triangle-list', cullMode: 'none' },
+        },
+      ],
+    };
+    const primitive = { topology: 'triangle-list', cullMode: 'none' };
+    this._bindGroupLayout = device.createBindGroupLayout({
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.VERTEX,
+          buffer: { type: 'uniform' },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.FRAGMENT,
+          sampler: { type: 'filtering' },
+        },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.FRAGMENT,
+          texture: { sampleType: 'float' },
+        },
+      ],
+    });
+    const layout = device.createPipelineLayout({
+      bindGroupLayouts: [this._bindGroupLayout],
+    });
+    this._pipeline = device.createRenderPipeline({
+      layout,
+      vertex,
+      fragment,
+      primitive,
       depthStencil: {
         format: 'depth24plus',
         depthWriteEnabled: true,
         depthCompare: 'less',
       },
     });
+    this._viewPipeline = device.createRenderPipeline({
+      layout,
+      vertex,
+      fragment,
+      primitive,
+      depthStencil: {
+        format: 'depth24plus',
+        depthWriteEnabled: true,
+        depthCompare: 'less',
+      },
+    });
+  }
+
+  /**
+   * @param {number} count
+   */
+  _ensureMatrixStaging(count) {
+    if (this._matrixStaging && this._matrixStagingCapacity >= count) return;
+    this._matrixStaging?.destroy();
+    this._matrixStagingCapacity = Math.max(count, 32);
+    this._matrixStaging = this._device.createBuffer({
+      size: this._matrixStagingCapacity * MAT4_BYTES,
+      usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+    });
+  }
+
+  /**
+   * @param {GPUCommandEncoder} encoder
+   * @param {number} slot
+   */
+  _copyUniformSlot(encoder, slot) {
+    encoder.copyBufferToBuffer(
+      this._matrixStaging,
+      slot * MAT4_BYTES,
+      this._uniform,
+      0,
+      MAT4_BYTES,
+    );
   }
 
   /**
@@ -168,15 +254,23 @@ export class AliasRenderer {
     );
 
     const bindGroup = this._device.createBindGroup({
-      layout: this._pipeline.getBindGroupLayout(0),
+      layout: this._bindGroupLayout,
       entries: [
         { binding: 0, resource: { buffer: this._uniform } },
         { binding: 1, resource: this._sampler },
         { binding: 2, resource: texture.createView() },
       ],
     });
+    const viewBindGroup = this._device.createBindGroup({
+      layout: this._bindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: this._viewUniform } },
+        { binding: 1, resource: this._sampler },
+        { binding: 2, resource: texture.createView() },
+      ],
+    });
 
-    entry = { model, texture, bindGroup, frameCache: new Map() };
+    entry = { model, texture, bindGroup, viewBindGroup, frameCache: new Map() };
     this._cache.set(name, entry);
     return entry;
   }
@@ -216,22 +310,35 @@ export class AliasRenderer {
     const proj = mat4Perspective((90 * Math.PI) / 180, aspect, 1, 8192);
     const view = mat4LookAt(camera.eye, camera.center, camera.up);
     const viewProj = mat4Multiply(proj, view);
-    const u = new Float32Array(16);
 
+    /** @type {{ entry: NonNullable<ReturnType<AliasRenderer['_getEntry']>>, mesh: { vbo: GPUBuffer, vertCount: number }, matrix: Float32Array }[]} */
+    const draws = [];
     for (const ent of ents) {
       const entry = this._getEntry(ent.model);
       if (!entry) continue;
       const mesh = this._meshForFrame(entry, ent.frame);
       if (!mesh.vertCount) continue;
-
       const yaw = (ent.yaw * Math.PI) / 180;
       const model = mat4Multiply(
         mat4Translate(ent.origin[0], ent.origin[1], ent.origin[2]),
         mat4RotateZ(yaw),
       );
-      u.set(mat4Multiply(viewProj, model));
-      this._device.queue.writeBuffer(this._uniform, 0, u);
+      draws.push({
+        entry,
+        mesh,
+        matrix: mat4Multiply(viewProj, model),
+      });
+    }
+    if (!draws.length) return;
 
+    this._ensureMatrixStaging(draws.length);
+    const blob = new Float32Array(draws.length * 16);
+    for (let i = 0; i < draws.length; i++) blob.set(draws[i].matrix, i * 16);
+    this._device.queue.writeBuffer(this._matrixStaging, 0, blob);
+
+    for (let i = 0; i < draws.length; i++) {
+      this._copyUniformSlot(encoder, i);
+      const { entry, mesh } = draws[i];
       const pass = encoder.beginRenderPass({
         colorAttachments: [
           {
@@ -254,6 +361,76 @@ export class AliasRenderer {
     }
   }
 
+  /**
+   * First-person weapon (R_DrawViewModel / cl.viewent).
+   * @param {GPUCommandEncoder} encoder
+   * @param {GPUTextureView} colorView
+   * @param {GPUTextureView} depthView
+   * @param {{ eye: Float32Array, center: Float32Array, up: Float32Array }} camera
+   * @param {number} width
+   * @param {number} height
+   * @param {{ model: string, origin: Float32Array, pitch: number, yaw: number, frame: number } | null} gun
+   */
+  drawViewModel(encoder, colorView, depthView, camera, width, height, gun) {
+    if (!this._viewPipeline || !gun || !gun.model) return;
+
+    const entry = this._getEntry(gun.model);
+    if (!entry) return;
+    const mesh = this._meshForFrame(entry, gun.frame);
+    if (!mesh.vertCount) return;
+
+    const aspect = width / Math.max(1, height);
+    // Depth-cleared pass (R_DrawViewModel). Near=4 matches WinQuake MYgluPerspective.
+    const proj = mat4Perspective((90 * Math.PI) / 180, aspect, 4, 4096);
+    const view = mat4LookAt(camera.eye, camera.center, camera.up);
+    const viewProj = mat4Multiply(proj, view);
+
+    const { forward, right, up } = angleVectors([gun.pitch, gun.yaw, 0]);
+    const o = camera.eye;
+    const model = new Float32Array([
+      forward[0],
+      forward[1],
+      forward[2],
+      0,
+      -right[0],
+      -right[1],
+      -right[2],
+      0,
+      up[0],
+      up[1],
+      up[2],
+      0,
+      o[0],
+      o[1],
+      o[2],
+      1,
+    ]);
+    const matrix = mat4Multiply(viewProj, model);
+    // Single draw — direct write is fine (nothing else shares _viewUniform this frame).
+    this._device.queue.writeBuffer(this._viewUniform, 0, matrix);
+
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [
+        {
+          view: colorView,
+          loadOp: 'load',
+          storeOp: 'store',
+        },
+      ],
+      depthStencilAttachment: {
+        view: depthView,
+        depthClearValue: 1,
+        depthLoadOp: 'clear',
+        depthStoreOp: 'store',
+      },
+    });
+    pass.setPipeline(this._viewPipeline);
+    pass.setBindGroup(0, entry.viewBindGroup);
+    pass.setVertexBuffer(0, mesh.vbo);
+    pass.draw(mesh.vertCount);
+    pass.end();
+  }
+
   destroy() {
     for (const entry of this._cache.values()) {
       entry.texture.destroy();
@@ -261,5 +438,7 @@ export class AliasRenderer {
     }
     this._cache.clear();
     this._uniform?.destroy();
+    this._viewUniform?.destroy();
+    this._matrixStaging?.destroy();
   }
 }

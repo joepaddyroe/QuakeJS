@@ -94,7 +94,6 @@ export class Host {
       this._attackWasDown = attack;
 
       if (server) {
-        const frameDt = Math.min(dt, 0.1);
         server.syncClientEdict(1, {
           origin: player.origin,
           velocity: player.velocity,
@@ -107,6 +106,11 @@ export class Host {
         });
         server.runClientThink(1, { attack, jump });
         server.applyClientEdict(1, player);
+        // Open walk-up doors as soon as we enter their fat trigger (before move)
+        if (!intermission) {
+          server.touchTriggers(player.origin, PLAYER_MINS, PLAYER_MAXS, 1);
+          server.applyClientEdict(1, player);
+        }
       }
 
       if (!intermission) {
@@ -127,8 +131,8 @@ export class Host {
       if (server) {
         const frameDt = Math.min(dt, 0.1);
         if (!intermission) {
-          // Buttons / door messages / key doors — SV_Impact on brush bumps
           server.impactTouches(1, player.impactedEdicts);
+          server.bumpOpenDoors(1, player.impactedEdicts);
           if (attackPressed) {
             const eye = player.eye();
             server.fireHitscan(1, eye, player.pitch, player.yaw, 20);
@@ -136,7 +140,6 @@ export class Host {
         }
         server.physics(frameDt, player);
         if (!intermission) {
-          // Player may have been carried by a plat/door — sync that origin
           server.syncClientEdict(1, {
             origin: player.origin,
             velocity: player.velocity,
@@ -200,6 +203,9 @@ export class Host {
         `org ${player.origin[0].toFixed(0)} ${player.origin[1].toFixed(0)} ${player.origin[2].toFixed(0)}  [${mode}]\n` +
         `eye ${eye[0].toFixed(0)} ${eye[1].toFixed(0)} ${eye[2].toFixed(0)}\n` +
         `vis ${this._renderer.visibleFaces}  leaf ${this._renderer.viewLeaf}  mdl ${this._renderer.aliasCount}\n` +
+        (this._renderer.viewWeapon
+          ? `gun ${this._renderer.viewWeapon}\n`
+          : '') +
         `\n` +
         (intermission
           ? `Level complete — click / jump to continue\n`

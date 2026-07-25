@@ -107,6 +107,7 @@ export class Server {
     );
 
     this.time = 1.0;
+    this._clientLoadoutReady = false;
     this.edicts.time = this.time;
     /** @type {string|null} */
     this.pendingMap = null;
@@ -533,43 +534,22 @@ export class Server {
   }
 
   /**
-   * Carry / shove local player with a moving SOLID_BSP pusher (SV_PushMove subset).
+   * Carry local player only when standing on the pusher (plats).
+   * Do not lateral-drag through doors — that feels like ghosting.
    * @param {number} pusher
    * @param {number[]} move
    * @param {import('./PlayerMove.js').PlayerMove} player
    * @returns {boolean} false if move blocked
    */
   _pushLocalPlayer(pusher, move, player) {
-    const f = this.progs.f;
-    const edicts = this.edicts;
-
     const onPusher = player.onground && (player.groundEntity | 0) === pusher;
 
     if (!onPusher) {
-      const pmin = [
-        player.origin[0] + PLAYER_MINS[0],
-        player.origin[1] + PLAYER_MINS[1],
-        player.origin[2] + PLAYER_MINS[2],
-      ];
-      const pmax = [
-        player.origin[0] + PLAYER_MAXS[0],
-        player.origin[1] + PLAYER_MAXS[1],
-        player.origin[2] + PLAYER_MAXS[2],
-      ];
-      const bmin = edicts.getVec(pusher, f.absmin);
-      const bmax = edicts.getVec(pusher, f.absmax);
-      const overlaps = !(
-        pmin[0] >= bmax[0] ||
-        pmin[1] >= bmax[1] ||
-        pmin[2] >= bmax[2] ||
-        pmax[0] <= bmin[0] ||
-        pmax[1] <= bmin[1] ||
-        pmax[2] <= bmin[2]
-      );
-      if (!overlaps) return true;
-      if (!this.world.testPlayerPosition(player.origin, PLAYER_MINS, PLAYER_MAXS, 0)) {
-        return true;
+      // After pusher moved: if player is embedded, fail move (door_blocked / crush)
+      if (this.world.testPlayerPosition(player.origin, PLAYER_MINS, PLAYER_MAXS, 0)) {
+        return false;
       }
+      return true;
     }
 
     const oldOrg = [player.origin[0], player.origin[1], player.origin[2]];
@@ -590,7 +570,6 @@ export class Server {
     player.origin[2] = tr.endpos[2];
     player._smoothZ = player.origin[2];
 
-    // Test with pusher non-solid (SV_PushMove sets SOLID_NOT around the test)
     if (this.world.testPlayerPosition(player.origin, PLAYER_MINS, PLAYER_MAXS, pusher)) {
       player.origin[0] = oldOrg[0];
       player.origin[1] = oldOrg[1];
@@ -599,11 +578,50 @@ export class Server {
       return false;
     }
 
-    if (onPusher || move[2] > 0) {
-      player.onground = true;
-      player.groundEntity = pusher;
-    }
+    player.onground = true;
+    player.groundEntity = pusher;
     return true;
+  }
+
+  /**
+   * Walk-up doors: fat trigger normally opens them; also open on bump if
+   * the door has no targetname / key / health (vanilla touch field doors).
+   * @param {number} playerEnt
+   * @param {Iterable<number>|number[]} hitEnts
+   */
+  bumpOpenDoors(playerEnt, hitEnts) {
+    const edicts = this.edicts;
+    const f = this.progs.f;
+    const progs = this.progs;
+    const ofs = this.progs.ofs;
+    const doorUse = progs.findFunction('door_use');
+    const actOfs = progs.globalOfs.get('activator');
+    const seen = new Set();
+
+    for (const e of hitEnts) {
+      if (!e || seen.has(e)) continue;
+      seen.add(e);
+      if (edicts.free[e]) continue;
+      if ((edicts.getFloat(e, f.solid) | 0) !== SOLID_BSP) continue;
+      if (progs.stringAt(edicts.getInt(e, f.classname)) !== 'door') continue;
+      if (edicts.getInt(e, f.use) !== doorUse) continue;
+      if (progs.stringAt(edicts.getInt(e, f.targetname))) continue;
+      if (edicts.getFloat(e, f.items)) continue;
+      if (edicts.getFloat(e, f.health) > 0) continue;
+
+      if (actOfs !== undefined) progs.globalsI[actOfs] = playerEnt;
+      progs.globalsI[ofs.self] = e;
+      progs.globalsI[ofs.other] = playerEnt;
+      progs.globalsF[ofs.time] = this.time;
+      const use = edicts.getInt(e, f.use);
+      if (!use) continue;
+      try {
+        this.exec.execute(use);
+      } catch (err) {
+        this.exec.reset();
+        console.error(`door use ${e}`, err);
+      }
+    }
   }
 
   /**
@@ -668,11 +686,84 @@ export class Server {
     edicts.setFloat(ent, f.movetype, MOVETYPE_WALK);
     edicts.setFloat(ent, f.solid, SOLID_SLIDEBOX);
     edicts.setFloat(ent, f.health, player.health ?? 100);
+    // Never draw a third-person body on the local client
+    edicts.setInt(ent, f.model, 0);
+    edicts.setFloat(ent, f.modelindex, 0);
     let flags = FL_CLIENT;
     if (player.onground) flags |= FL_ONGROUND;
     edicts.setFloat(ent, f.flags, flags);
     edicts.setInt(ent, f.groundentity, player.groundEntity | 0);
+    this._ensureClientLoadout(ent);
     edicts.linkAbs(ent);
+  }
+
+  /**
+   * W_SetCurrentAmmo weapon → view model (single active weapon only).
+   * @param {number} weapon IT_* bit
+   * @returns {string}
+   */
+  _viewModelForWeapon(weapon) {
+    const w = weapon | 0;
+    if (w === 4096) return 'progs/v_axe.mdl'; // IT_AXE
+    if (w === 1) return 'progs/v_shot.mdl'; // IT_SHOTGUN
+    if (w === 2) return 'progs/v_shot2.mdl';
+    if (w === 4) return 'progs/v_nail.mdl';
+    if (w === 8) return 'progs/v_nail2.mdl';
+    if (w === 16) return 'progs/v_rock.mdl';
+    if (w === 32) return 'progs/v_rock2.mdl';
+    if (w === 64) return 'progs/v_light.mdl';
+    return 'progs/v_shot.mdl';
+  }
+
+  /**
+   * SetNewParms + W_SetCurrentAmmo subset until full PutClientInServer.
+   * @param {number} ent
+   */
+  _ensureClientLoadout(ent) {
+    if (this._clientLoadoutReady) return;
+    const f = this.progs.f;
+    const edicts = this.edicts;
+    // IT_SHOTGUN|IT_AXE|IT_SHELLS — SetNewParms; active weapon is shotgun only
+    const IT_AXE = 4096;
+    const IT_SHOTGUN = 1;
+    const IT_SHELLS = 256;
+    edicts.setFloat(ent, f.items, IT_SHOTGUN | IT_AXE | IT_SHELLS);
+    edicts.setFloat(ent, f.weapon, IT_SHOTGUN);
+    edicts.setFloat(ent, f.ammo_shells, 25);
+    edicts.setFloat(ent, f.currentammo, 25);
+    edicts.setFloat(ent, f.weaponframe, 0);
+    const path = this._viewModelForWeapon(IT_SHOTGUN);
+    edicts.setInt(ent, f.weaponmodel, this.progs.allocString(path));
+    this.precacheModel(path);
+    this._clientLoadoutReady = true;
+  }
+
+  /**
+   * cl.viewent setup (V_CalcRefdef gun pose subset).
+   * @param {{ origin: Float32Array, pitch: number, yaw: number, viewOfsZ: number, _smoothZ: number }} player
+   * @returns {{ model: string, origin: Float32Array, pitch: number, yaw: number, frame: number } | null}
+   */
+  getViewWeapon(player) {
+    const f = this.progs.f;
+    const edicts = this.edicts;
+    const ent = 1;
+    if (edicts.free[ent]) return null;
+    if ((edicts.getFloat(ent, f.health) | 0) <= 0) return null;
+    // Always resolve from .weapon (W_SetCurrentAmmo) — one view model, never axe+gun.
+    const weapon = edicts.getFloat(ent, f.weapon) | 0;
+    const model = this._viewModelForWeapon(weapon || 1);
+    const origin = new Float32Array([
+      player.origin[0],
+      player.origin[1],
+      player._smoothZ + player.viewOfsZ + 2,
+    ]);
+    return {
+      model,
+      origin,
+      pitch: player.pitch,
+      yaw: player.yaw,
+      frame: edicts.getFloat(ent, f.weaponframe) | 0,
+    };
   }
 
   /**
@@ -727,9 +818,23 @@ export class Server {
     const out = [];
     for (let e = 1; e < edicts.numEdicts; e++) {
       if (edicts.free[e]) continue;
+      // cl_main.c CL_RelinkEntities: skip cl.viewentity unless chase_active
+      if (e === 1) continue;
+      if ((edicts.getFloat(e, f.flags) | 0) & FL_CLIENT) continue;
+      const classname = progs.stringAt(edicts.getInt(e, f.classname));
+      if (classname === 'player') continue;
       const model = progs.stringAt(edicts.getInt(e, f.model));
       if (!model || model[0] === '*') continue;
       if (!model.endsWith('.mdl')) continue;
+      // View weapons are cl.viewent only; never draw player body MDLs in FP
+      if (
+        model.includes('/v_') ||
+        model === 'progs/player.mdl' ||
+        model === 'progs/eyes.mdl' ||
+        model === 'progs/h_player.mdl'
+      ) {
+        continue;
+      }
       const solid = edicts.getFloat(e, f.solid) | 0;
       // Skip pure triggers / removed visuals
       if (solid === SOLID_NOT && !(edicts.getFloat(e, f.modelindex) > 0)) continue;

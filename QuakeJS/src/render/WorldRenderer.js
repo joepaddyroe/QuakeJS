@@ -259,6 +259,10 @@ export class WorldRenderer {
     this._solidUniform = null;
     this._skyUniform = null;
     this._turbUniform = null;
+    /** Staging mat4s for brush ents — copied into _solidUniform inside the encoder */
+    /** @type {GPUBuffer|null} */
+    this._brushMatrixStaging = null;
+    this._brushMatrixCapacity = 0;
     this._solidLayout = null;
     this._skyLayout = null;
     this._turbLayout = null;
@@ -927,43 +931,74 @@ export class WorldRenderer {
 
     pass.end();
 
-    // Brush entities need their own passes — WebGPU forbids buffer writes mid-pass
+    // Brush entities — each needs its own matrix. queue.writeBuffer all land before
+    // the CB runs, so we stage matrices and copyBufferToBuffer inside the encoder.
     if (this._solidVbo && brushEntities.length) {
+      /** @type {{ be: typeof brushEntities[0], faces: number[] }[]} */
+      const draws = [];
       for (const be of brushEntities) {
         const faces = this._subSolidFaces[be.submodel];
         if (!faces || !faces.length) continue;
-        const model = mat4Translate(be.origin[0], be.origin[1], be.origin[2]);
-        solidU.set(mat4Multiply(viewProj, model));
-        this._device.queue.writeBuffer(this._solidUniform, 0, solidU);
-
-        const bpass = encoder.beginRenderPass({
-          colorAttachments: [
-            {
-              view: colorView,
-              loadOp: 'load',
-              storeOp: 'store',
-            },
-          ],
-          depthStencilAttachment: {
-            view: this._depthView,
-            depthLoadOp: 'load',
-            depthStoreOp: 'store',
-          },
-        });
-        bpass.setPipeline(this._solidPipeline);
-        bpass.setVertexBuffer(0, this._solidVbo);
-        let lastBg = null;
-        for (const fi of faces) {
-          const fd = this._solidByFace.get(fi);
-          if (!fd) continue;
-          if (fd.bindGroup !== lastBg) {
-            bpass.setBindGroup(0, fd.bindGroup);
-            lastBg = fd.bindGroup;
-          }
-          bpass.draw(fd.vertCount, 1, fd.firstVert, 0);
-          this.visibleFaces += 1;
+        draws.push({ be, faces });
+      }
+      if (draws.length) {
+        if (
+          !this._brushMatrixStaging ||
+          this._brushMatrixCapacity < draws.length
+        ) {
+          this._brushMatrixStaging?.destroy();
+          this._brushMatrixCapacity = Math.max(draws.length, 16);
+          this._brushMatrixStaging = this._device.createBuffer({
+            size: this._brushMatrixCapacity * 64,
+            usage: GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+          });
         }
-        bpass.end();
+        const blob = new Float32Array(draws.length * 16);
+        for (let i = 0; i < draws.length; i++) {
+          const be = draws[i].be;
+          const model = mat4Translate(be.origin[0], be.origin[1], be.origin[2]);
+          blob.set(mat4Multiply(viewProj, model), i * 16);
+        }
+        this._device.queue.writeBuffer(this._brushMatrixStaging, 0, blob);
+
+        for (let i = 0; i < draws.length; i++) {
+          encoder.copyBufferToBuffer(
+            this._brushMatrixStaging,
+            i * 64,
+            this._solidUniform,
+            0,
+            64,
+          );
+          const { faces } = draws[i];
+          const bpass = encoder.beginRenderPass({
+            colorAttachments: [
+              {
+                view: colorView,
+                loadOp: 'load',
+                storeOp: 'store',
+              },
+            ],
+            depthStencilAttachment: {
+              view: this._depthView,
+              depthLoadOp: 'load',
+              depthStoreOp: 'store',
+            },
+          });
+          bpass.setPipeline(this._solidPipeline);
+          bpass.setVertexBuffer(0, this._solidVbo);
+          let lastBg = null;
+          for (const fi of faces) {
+            const fd = this._solidByFace.get(fi);
+            if (!fd) continue;
+            if (fd.bindGroup !== lastBg) {
+              bpass.setBindGroup(0, fd.bindGroup);
+              lastBg = fd.bindGroup;
+            }
+            bpass.draw(fd.vertCount, 1, fd.firstVert, 0);
+            this.visibleFaces += 1;
+          }
+          bpass.end();
+        }
       }
     }
   }
@@ -995,6 +1030,7 @@ export class WorldRenderer {
     this._solidUniform?.destroy();
     this._skyUniform?.destroy();
     this._turbUniform?.destroy();
+    this._brushMatrixStaging?.destroy();
     this._depthTexture?.destroy();
   }
 }

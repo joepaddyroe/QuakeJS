@@ -53,7 +53,7 @@ If you are picking up this project with no chat history:
 5. Respect **§2–3** (SOLID + layers) before editing.
 6. After completing work, update **§12**, **§7**, and **§15 Changelog** in this file. Leave `README.md` alone unless the change is drastic for end users.
 
-**Current maturity (2026-07-25):** id1 PAK + BSP world + hull walk + stair smooth + QuakeC + brush draw/clip + **changelevel** (touch episode exit → load `e1m1` etc.). No alias models / loopback protocol yet.
+**Current maturity (2026-07-25):** id1 PAK + BSP world + hull walk + stair smooth + QuakeC + brush draw/clip + changelevel + alias MDL + FP view weapon stub. No loopback protocol / sbar / sound yet.
 
 ### Remaining tasks (priority order)
 
@@ -68,7 +68,7 @@ Use **§13** for file-level detail. Summary:
 | **P2** | Loopback client ↔ server + protocol | Not started |
 | **P2** | QuakeC VM (`pr_exec` / edicts / builtins) | Partial — spawn/think/touch/changelevel |
 | **P2** | Physics / movement (`sv_phys`, `world`) | Partial — walk + brush clip + PUSH |
-| **P3** | View weapon, particles, status bar, menu | Not started |
+| **P3** | View weapon, particles, status bar, menu | Partial — view weapon drawn |
 | **P3** | Sound (DMA-style mix → Web Audio) | Not started |
 | **P4** | Saves, demos, console polish | Not started |
 | **P5** | QuakeWorld / multiplayer | Not started |
@@ -289,7 +289,7 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started
 - [x] World brush draw with lightmaps (static, style 0)
 - [x] PVS culling (`Mod_PointInLeaf` / `Mod_LeafPVS` / marksurfaces)
 - [x] Turbulent water / sky (`EmitWaterPolys` / `EmitSkyPolys` subset)
-- [x] Alias models (items/monsters) — no view weapon yet
+- [x] Alias models (items/monsters) + first-person view weapon (`v_shot.mdl`)
 - [ ] Sprites + particles
 - [ ] Dynamic lights / lightstyles
 - [ ] 2D draw (`Draw_Pic`, console background)
@@ -307,7 +307,7 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started
 - [x] Clip player against brush entities (`World.brushes` / submodel hulls)
 - [x] `changelevel` builtin + Host map reload (`e1m1` …)
 - [ ] Client connect via **loopback** (`net_loop`)
-- [ ] Fuller builtins + `PutClientInServer` / view weapon
+- [ ] Fuller builtins + `PutClientInServer` (loadout stub for view weapon done)
 
 ### Phase 5 — Client playable slice
 - [ ] `CL_SendCmd` / `SV_ClientThink` movement
@@ -347,10 +347,10 @@ Last audited: **2026-07-25** against `Quake-master/WinQuake`. Re-audit after maj
 Host / frame         ████░░░░░░  ~40%   rAF Host.frame; server physics + trigger touch
 Filesystem (PAK)     ████████░░  ~80%   pak0+pak1; no loose files / -path
 Models (BSP/MDL/SPR) ██████░░░░  ~65%   BSP+alias MDL; no SPR
-WebGPU render        ███████░░░  ~75%   world+brush+alias; no frustum/weapon
+WebGPU render        ███████░░░  ~78%   world+brush+alias+view weapon; no frustum
 Server / world       ███████░░░  ~65%   hull walk + pushers + brush clip
 QuakeC VM            ██████░░░░  ~55%   exec+edicts+builtins; doors/triggers on start
-Client / protocol    ░░░░░░░░░░   0%
+Client / protocol    ░░░░░░░░░░   0%   view weapon pose via local edict stub
 UI / console/menu    ░░░░░░░░░░   0%   HUD text overlay only
 Audio                ░░░░░░░░░░   0%
 Saves / demos        ░░░░░░░░░░   0%
@@ -411,7 +411,7 @@ Use this when choosing what to port next. Goal: **playable Quake 1 single-player
 | P2 | **Draw brush ents + entity clip** | Done | `WorldRenderer` + `World.brushes` · `SV_ClipMoveToEntity` |
 | P2 | **Changelevel / map load** | Done (no intermission UI) | `Host.changeMap`, builtin #70 · `host_cmd.c` |
 | P2 | **Loopback net + SV/CL connect** | Real Quake architecture | `net/NetLoop.js`, `Client.js` · `net_loop.c`, `sv_main.c`, `cl_main.c` |
-| P3 | **Alias + view weapon** | Player presence | `AliasRenderer.js` · `gl_mesh.c`, `view.c` |
+| P3 | **Alias + view weapon** | Partial — world MDL + FP shotgun | `AliasRenderer.js` · `gl_mesh.c`, `view.c` |
 | P3 | **Status bar + menu + console** | Operable game | `ui/*` · `sbar.c`, `menu.c`, `console.c` |
 | P3 | **Sound** | Feedback | `audio/*` · `snd_dma.c`, `snd_mix.c` |
 | P4 | **Particles, temp ents, sky polish** | Visual parity | `ParticleRenderer.js`, `ClientTempEnts.js` · `r_part.c`, `cl_tent.c` |
@@ -518,6 +518,8 @@ User supplies a legally obtained Quake `id1` directory (at least `pak0.pak`). Fi
 | 2026-07-25 | **Doors/buttons:** SV_Impact on brush bumps (func_button); hitscan for shootable secret doors; walk-up door fields already via SOLID_TRIGGER |
 | 2026-07-25 | **Pushers:** SV_PushMove subset carries local player on plats/doors; `groundEntity`; brush `startsolid` merge; refresh brushes while pushers move |
 | 2026-07-25 | **Alias MDL:** `AliasModel` + `AliasRenderer`; draw items/monsters from `getAliasDrawList` |
+| 2026-07-25 | **View weapon:** `v_shot.mdl` via client loadout stub (`SetNewParms`/`W_SetCurrentAmmo`); `drawViewModel` + camera-aligned basis |
+| 2026-07-25 | **WebGPU uniform bug:** shared `writeBuffer` before submit made every alias/brush draw use the last matrix (ents stacked on camera); fix via in-encoder `copyBufferToBuffer` |
 
 ---
 

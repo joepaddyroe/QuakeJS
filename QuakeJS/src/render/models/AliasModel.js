@@ -5,7 +5,6 @@
 
 const IDPOLYHEADER = 0x4f504449; // 'IDPO' little-endian
 const ALIAS_VERSION = 6;
-const ALIAS_ONSEAM = 0x0020;
 const ALIAS_SINGLE = 0;
 const ALIAS_SKIN_SINGLE = 0;
 
@@ -110,7 +109,7 @@ export class AliasModel {
       const s = view.getInt32(o + 4, true);
       const t = view.getInt32(o + 8, true);
       o += 12;
-      this.stVerts.push({ onseam: !!(onseam & ALIAS_ONSEAM) || onseam !== 0, s, t });
+      this.stVerts.push({ onseam: onseam !== 0, s, t });
     }
 
     /** @type {{ facesFront: boolean, verts: [number, number, number] }[]} */

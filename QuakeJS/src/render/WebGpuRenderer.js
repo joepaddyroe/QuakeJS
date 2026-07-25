@@ -34,6 +34,7 @@ export class WebGpuRenderer {
     this.visibleFaces = 0;
     this.viewLeaf = 0;
     this.aliasCount = 0;
+    this.viewWeapon = '';
     this._time = 0;
   }
 
@@ -112,6 +113,17 @@ export class WebGpuRenderer {
           width,
           height,
           aliases,
+        );
+        const gun = this.server ? this.server.getViewWeapon(this.player) : null;
+        this.viewWeapon = gun ? gun.model : '';
+        this._aliasRend.drawViewModel(
+          encoder,
+          colorView,
+          this._worldRend._depthView,
+          this.player.lookAtArgs(),
+          width,
+          height,
+          gun,
         );
       }
       this.visibleFaces = this._worldRend.visibleFaces;
