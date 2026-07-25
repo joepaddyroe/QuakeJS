@@ -1476,7 +1476,7 @@ export class Server {
    * Mirror local player into reserved client edict (svs.clients[0] → edict 1).
    * QuakeC teleports/triggers require classname "player", health > 0, SOLID_SLIDEBOX.
    * @param {number} ent
-   * @param {{ origin: Float32Array|number[], velocity?: Float32Array|number[], pitch?: number, yaw?: number, mins?: Float32Array|number[], maxs?: Float32Array|number[], health?: number, onground?: boolean, groundEntity?: number }} player
+   * @param {{ origin: Float32Array|number[], velocity?: Float32Array|number[], pitch?: number, yaw?: number, mins?: Float32Array|number[], maxs?: Float32Array|number[], health?: number, onground?: boolean, groundEntity?: number, viewOfsZ?: number }} player
    */
   syncClientEdict(ent, player) {
     const f = this.progs.f;
@@ -1502,9 +1502,16 @@ export class Server {
     // Never draw a third-person body on the local client
     edicts.setInt(ent, f.model, 0);
     edicts.setFloat(ent, f.modelindex, 0);
-    let flags = FL_CLIENT;
+    // Preserve QC flags; only maintain FL_CLIENT / FL_ONGROUND
+    let flags = edicts.getFloat(ent, f.flags) | 0;
+    flags |= FL_CLIENT;
     if (player.onground) flags |= FL_ONGROUND;
+    else flags &= ~FL_ONGROUND;
     edicts.setFloat(ent, f.flags, flags);
+    // Eye height for monster checkclient / visible()
+    const viewZ =
+      player.viewOfsZ != null && player.viewOfsZ !== 0 ? player.viewOfsZ : 22;
+    edicts.setVec(ent, f.view_ofs, [0, 0, viewZ]);
     edicts.setInt(ent, f.groundentity, player.groundEntity | 0);
     if (!this._clientSpawned) this._ensureClientLoadout(ent);
     edicts.linkAbs(ent);

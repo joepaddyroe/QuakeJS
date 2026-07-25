@@ -722,6 +722,7 @@ export class Host {
           maxs: PLAYER_MAXS,
           onground: player.onground,
           groundEntity: player.groundEntity,
+          viewOfsZ: player.viewOfsZ,
         });
         server.runClientThink(
           1,
@@ -765,6 +766,18 @@ export class Host {
       if (server) {
         const frameDt = Math.min(dt, 0.1);
         if (!intermission) {
+          // Sync after PlayerMove so monster checkclient/PVS sees current pose
+          server.syncClientEdict(1, {
+            origin: player.origin,
+            velocity: player.velocity,
+            pitch: player.pitch,
+            yaw: player.yaw,
+            mins: PLAYER_MINS,
+            maxs: PLAYER_MAXS,
+            onground: player.onground,
+            groundEntity: player.groundEntity,
+            viewOfsZ: player.viewOfsZ,
+          });
           server.impactTouches(1, player.impactedEdicts);
           server.bumpOpenDoors(1, player.impactedEdicts);
           if (attackPressed) {
@@ -784,6 +797,7 @@ export class Host {
             maxs: PLAYER_MAXS,
             onground: player.onground,
             groundEntity: player.groundEntity,
+            viewOfsZ: player.viewOfsZ,
           });
           server.touchTriggers(player.origin, PLAYER_MINS, PLAYER_MAXS, 1);
           const applied = server.applyClientEdict(1, player);

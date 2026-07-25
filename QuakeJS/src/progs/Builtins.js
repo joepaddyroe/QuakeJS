@@ -12,10 +12,46 @@ import {
   FL_SWIM,
   FL_NOTARGET,
   FL_ITEM,
+  FL_PARTIALGROUND,
   MOVETYPE_PUSH,
   MAX_CLIENTS,
 } from './Edicts.js';
 import { angleVectors } from '../math/QuakeMath.js';
+
+/**
+ * Ray vs AABB — enter fraction in [0,1], or -1 if startsolid, or null if miss.
+ * @param {number[]} start
+ * @param {number[]} end
+ * @param {Float32Array|number[]} amin
+ * @param {Float32Array|number[]} amax
+ * @returns {number|null}
+ */
+function rayAabbFraction(start, end, amin, amax) {
+  let tmin = 0;
+  let tmax = 1;
+  for (let i = 0; i < 3; i++) {
+    const d = end[i] - start[i];
+    if (Math.abs(d) < 1e-8) {
+      if (start[i] < amin[i] || start[i] > amax[i]) return null;
+      continue;
+    }
+    let t1 = (amin[i] - start[i]) / d;
+    let t2 = (amax[i] - start[i]) / d;
+    if (t1 > t2) {
+      const tmp = t1;
+      t1 = t2;
+      t2 = tmp;
+    }
+    if (t1 > tmin) tmin = t1;
+    if (t2 < tmax) tmax = t2;
+    if (tmin > tmax) return null;
+  }
+  if (tmin < 0) {
+    // Started inside — still a hit for CheckAttack (end often inside target)
+    return tmax >= 0 ? 0 : null;
+  }
+  return tmin;
+}
 
 /**
  * @param {object} ctx
@@ -66,6 +102,119 @@ export function createBuiltins(ctx) {
       out += G_STRING(PARM(i));
     }
     return out;
+  };
+
+  /**
+   * SV_movestep subset — horizontal move with STEPSIZE stair/slope adjust.
+   * @param {number} ent
+   * @param {number} dx
+   * @param {number} dy
+   * @returns {boolean}
+   */
+  const svMoveStep = (ent, dx, dy) => {
+    const o = edicts.getVec(ent, f.origin);
+    const mins = new Float32Array(edicts.getVec(ent, f.mins));
+    const maxs = new Float32Array(edicts.getVec(ent, f.maxs));
+    const STEP = 18;
+    const neworg = new Float32Array([o[0] + dx, o[1] + dy, o[2] + STEP]);
+    const end = new Float32Array([neworg[0], neworg[1], neworg[2] - STEP * 2]);
+    let tr = ctx.server.world.playerMove(neworg, end, mins, maxs);
+    if (tr.allsolid) return false;
+    if (tr.startsolid) {
+      neworg[2] -= STEP;
+      tr = ctx.server.world.playerMove(neworg, end, mins, maxs);
+      if (tr.allsolid || tr.startsolid) return false;
+    }
+    if (tr.fraction === 1) {
+      // Cliff — allow if FL_PARTIALGROUND
+      if ((edicts.getFloat(ent, f.flags) | 0) & FL_PARTIALGROUND) {
+        edicts.setVec(ent, f.origin, [o[0] + dx, o[1] + dy, o[2]]);
+        edicts.linkAbs(ent);
+        edicts.setFloat(
+          ent,
+          f.flags,
+          (edicts.getFloat(ent, f.flags) | 0) & ~FL_ONGROUND,
+        );
+        return true;
+      }
+      return false;
+    }
+    edicts.setVec(ent, f.origin, tr.endpos);
+    edicts.linkAbs(ent);
+    let flags = edicts.getFloat(ent, f.flags) | 0;
+    flags = (flags & ~FL_PARTIALGROUND) | FL_ONGROUND;
+    edicts.setFloat(ent, f.flags, flags);
+    if (tr.ent) edicts.setInt(ent, f.groundentity, tr.ent);
+    return true;
+  };
+
+  /**
+   * SV_StepDirection lite — set ideal_yaw and try step.
+   * @param {number} ent
+   * @param {number} yaw degrees
+   * @param {number} dist
+   * @returns {boolean}
+   */
+  const svStepDirection = (ent, yaw, dist) => {
+    const idealOfs = progs.fieldByName.get('ideal_yaw')?.ofs;
+    if (idealOfs != null) edicts.setFloat(ent, idealOfs, yaw);
+    // changeyaw toward ideal (instant for step try — vanilla turns then may revert)
+    const ang = edicts.getVec(ent, f.angles);
+    ang[1] = yaw;
+    edicts.setVec(ent, f.angles, ang);
+    const rad = (yaw * Math.PI) / 180;
+    return svMoveStep(ent, Math.cos(rad) * dist, Math.sin(rad) * dist);
+  };
+
+  /**
+   * SV_NewChaseDir subset — try alternate headings when blocked.
+   * @param {number} ent
+   * @param {number} goal
+   * @param {number} dist
+   */
+  const svNewChaseDir = (ent, goal, dist) => {
+    const o = edicts.getVec(ent, f.origin);
+    const t = edicts.getVec(goal, f.origin);
+    const deltax = t[0] - o[0];
+    const deltay = t[1] - o[1];
+    const idealOfs = progs.fieldByName.get('ideal_yaw')?.ofs;
+    const olddir =
+      idealOfs != null
+        ? Math.round(edicts.getFloat(ent, idealOfs) / 45) * 45
+        : 0;
+    const turnaround = (olddir + 180) % 360;
+
+    /** @type {number[]} */
+    const tryYaw = [];
+    let d1 = deltax > 10 ? 0 : deltax < -10 ? 180 : -1;
+    let d2 = deltay > 10 ? 90 : deltay < -10 ? 270 : -1;
+    if (d1 !== -1 && d2 !== -1) {
+      if (d1 === 0) tryYaw.push(d2 === 90 ? 45 : 315);
+      else tryYaw.push(d2 === 90 ? 135 : 225);
+    }
+    if (Math.abs(deltay) > Math.abs(deltax)) {
+      if (d2 !== -1) tryYaw.push(d2);
+      if (d1 !== -1) tryYaw.push(d1);
+    } else {
+      if (d1 !== -1) tryYaw.push(d1);
+      if (d2 !== -1) tryYaw.push(d2);
+    }
+    tryYaw.push(olddir);
+    if (Math.random() < 0.5) {
+      for (let y = 0; y <= 315; y += 45) tryYaw.push(y);
+    } else {
+      for (let y = 315; y >= 0; y -= 45) tryYaw.push(y);
+    }
+    tryYaw.push(turnaround);
+
+    const seen = new Set();
+    for (const yaw of tryYaw) {
+      const y = ((yaw % 360) + 360) % 360;
+      if (seen.has(y)) continue;
+      seen.add(y);
+      if (svStepDirection(ent, y, dist)) return;
+    }
+    if (idealOfs != null) edicts.setFloat(ent, idealOfs, olddir);
   };
 
   /** @type {((() => void) | null)[]} */
@@ -159,30 +308,14 @@ export function createBuiltins(ctx) {
     edicts.freeEdict(G_INT(PARM(0)));
   };
   builtins[16] = () => {
-    // traceline(v1, v2, nomonsters, ent)
+    // traceline(v1, v2, nomonsters, ent) — world + entity clip (CheckAttack needs trace_ent)
     const v1 = G_VECTOR(PARM(0));
     const v2 = G_VECTOR(PARM(1));
-    const tr = ctx.server.world.playerMove(
-      v1,
-      v2,
-      new Float32Array([0, 0, 0]),
-      new Float32Array([0, 0, 0]),
-    );
-    // Use hull0 for point trace — better:
+    const nomonsters = G_FLOAT(PARM(2));
+    const passedict = G_INT(PARM(3));
+
     const hull = ctx.server.bsp.hulls[0];
-    const trace = {
-      allsolid: true,
-      startsolid: false,
-      inopen: false,
-      inwater: false,
-      fraction: 1,
-      endpos: new Float32Array(v2),
-      plane: { normal: new Float32Array(3), dist: 0 },
-    };
-    // Reuse recursive via World — point hull
     const w = ctx.server.world;
-    const startL = new Float32Array(v1);
-    const endL = new Float32Array(v2);
     const t = {
       allsolid: true,
       startsolid: false,
@@ -192,20 +325,50 @@ export function createBuiltins(ctx) {
       endpos: new Float32Array(v2),
       plane: { normal: new Float32Array(3), dist: 0 },
     };
-    w._recursiveHullCheck(hull, hull.firstclipnode, 0, 1, startL, endL, t);
+    w._recursiveHullCheck(
+      hull,
+      hull.firstclipnode,
+      0,
+      1,
+      new Float32Array(v1),
+      new Float32Array(v2),
+      t,
+    );
+    let hitEnt = 0;
+
+    // Clip doors/plats (BSP) always; non-BSP only when nomonsters==0 (MOVE_NORMAL)
+    for (let e = 1; e < edicts.numEdicts; e++) {
+      if (e === passedict || edicts.free[e]) continue;
+      const solid = edicts.getFloat(e, f.solid) | 0;
+      if (solid === SOLID_NOT || solid === SOLID_TRIGGER) continue;
+      if (nomonsters && solid !== SOLID_BSP) continue;
+
+      const amin = edicts.getVec(e, f.absmin);
+      const amax = edicts.getVec(e, f.absmax);
+      const frac = rayAabbFraction(v1, v2, amin, amax);
+      if (frac == null || frac < 0) continue;
+      if (frac < t.fraction) {
+        t.fraction = frac;
+        t.endpos[0] = v1[0] + (v2[0] - v1[0]) * frac;
+        t.endpos[1] = v1[1] + (v2[1] - v1[1]) * frac;
+        t.endpos[2] = v1[2] + (v2[2] - v1[2]) * frac;
+        t.allsolid = false;
+        hitEnt = e;
+      }
+    }
+
     SET_FLOAT(ofs.trace_allsolid, t.allsolid ? 1 : 0);
     SET_FLOAT(ofs.trace_startsolid, t.startsolid ? 1 : 0);
     SET_FLOAT(ofs.trace_fraction, t.fraction);
     SET_VECTOR(ofs.trace_endpos, t.endpos);
     SET_VECTOR(ofs.trace_plane_normal, t.plane.normal);
     SET_FLOAT(ofs.trace_plane_dist, t.plane.dist);
-    SET_INT(ofs.trace_ent, 0);
+    SET_INT(ofs.trace_ent, hitEnt);
     SET_FLOAT(ofs.trace_inopen, t.inopen ? 1 : 0);
     SET_FLOAT(ofs.trace_inwater, t.inwater ? 1 : 0);
-    void tr;
   };
   builtins[17] = () => {
-    // PF_checkclient — client only if in monster's view of client PVS
+    // PF_checkclient — return client if monster eye is in client's PVS
     const player = 1;
     if (edicts.free[player] || (edicts.getFloat(player, f.health) | 0) <= 0) {
       RETURN_INT(0);
@@ -217,26 +380,72 @@ export function createBuiltins(ctx) {
     }
     const bsp = ctx.server.bsp;
     if (!bsp) {
-      RETURN_INT(0);
+      RETURN_INT(player);
       return;
     }
-    // PVS is taken from the client (vanilla PF_newcheckclient)
+
+    // Keep a usable eye height even if QC view_ofs was cleared
+    let pvo = edicts.getVec(player, f.view_ofs);
+    if (!pvo[0] && !pvo[1] && !pvo[2]) {
+      edicts.setVec(player, f.view_ofs, [0, 0, 22]);
+      pvo = edicts.getVec(player, f.view_ofs);
+    }
     const po = edicts.getVec(player, f.origin);
-    const pvo = edicts.getVec(player, f.view_ofs);
     const peye = [po[0] + pvo[0], po[1] + pvo[1], po[2] + pvo[2]];
     const playerLeaf = bsp.pointInLeaf(peye);
-    const pvs = Uint8Array.from(bsp.leafPVS(playerLeaf));
+    // Copy PVS row — leafPVS reuses a shared buffer
+    const pvsSrc = bsp.leafPVS(playerLeaf);
+    const row = (bsp.numVisLeafs + 7) >> 3;
+    const pvs = pvsSrc.slice(0, row);
 
     const self = G_INT(ofs.self);
     const so = edicts.getVec(self, f.origin);
     const svo = edicts.getVec(self, f.view_ofs);
-    const eye = [so[0] + svo[0], so[1] + svo[1], so[2] + svo[2]];
-    const selfLeaf = bsp.pointInLeaf(eye);
-    // leafs[0] solid; PVS bit i ↔ leafs[i+1]
+    let eye = [so[0] + svo[0], so[1] + svo[1], so[2] + svo[2]];
+    let selfLeaf = bsp.pointInLeaf(eye);
+    // Eye in solid → fall back to origin (common for short monsters / bad view_ofs)
+    if (selfLeaf === 0) {
+      eye = [so[0], so[1], so[2]];
+      selfLeaf = bsp.pointInLeaf(eye);
+    }
     const bit = selfLeaf - 1;
-    if (bit < 0 || !(pvs[bit >> 3] & (1 << (bit & 7)))) {
+    if (bit < 0 || bit >= bsp.numVisLeafs) {
       RETURN_INT(0);
       return;
+    }
+    const inPvs = !!(pvs[bit >> 3] & (1 << (bit & 7)));
+    if (!inPvs) {
+      // PVS miss: still accept clear LOS (shared vis buffer / leaf edge cases)
+      const dx = eye[0] - peye[0];
+      const dy = eye[1] - peye[1];
+      const dz = eye[2] - peye[2];
+      if (dx * dx + dy * dy + dz * dz > 1200 * 1200) {
+        RETURN_INT(0);
+        return;
+      }
+      const hull = bsp.hulls[0];
+      const t = {
+        allsolid: true,
+        startsolid: false,
+        inopen: false,
+        inwater: false,
+        fraction: 1,
+        endpos: new Float32Array(peye),
+        plane: { normal: new Float32Array(3), dist: 0 },
+      };
+      ctx.server.world._recursiveHullCheck(
+        hull,
+        hull.firstclipnode,
+        0,
+        1,
+        new Float32Array(eye),
+        new Float32Array(peye),
+        t,
+      );
+      if (t.fraction < 1 || t.startsolid) {
+        RETURN_INT(0);
+        return;
+      }
     }
     RETURN_INT(player);
   }; // checkclient
@@ -301,7 +510,7 @@ export function createBuiltins(ctx) {
   builtins[30] = () => {}; // traceoff
   builtins[31] = () => {}; // eprint
   builtins[32] = () => {
-    // walkmove(yaw, dist) — PF_walkmove / SV_movestep subset
+    // walkmove(yaw, dist) — PF_walkmove / SV_movestep
     const self = G_INT(ofs.self);
     const flags = edicts.getFloat(self, f.flags) | 0;
     if (!(flags & (FL_ONGROUND | FL_FLY | FL_SWIM))) {
@@ -310,31 +519,9 @@ export function createBuiltins(ctx) {
     }
     const yaw = (G_FLOAT(PARM(0)) * Math.PI) / 180;
     const dist = G_FLOAT(PARM(1));
-    const o = edicts.getVec(self, f.origin);
-    const end = new Float32Array([
-      o[0] + Math.cos(yaw) * dist,
-      o[1] + Math.sin(yaw) * dist,
-      o[2],
-    ]);
-    const mins = new Float32Array(edicts.getVec(self, f.mins));
-    const maxs = new Float32Array(edicts.getVec(self, f.maxs));
-    // Step up then down (SV_movestep STEPSIZE=18 subset)
-    const STEP = 18;
-    const raised = new Float32Array([end[0], end[1], end[2] + STEP]);
-    const down = new Float32Array([end[0], end[1], end[2] - STEP]);
-    const trUp = ctx.server.world.playerMove(o, raised, mins, maxs);
-    const start = trUp.fraction < 1 && !trUp.allsolid ? trUp.endpos : raised;
-    const tr = ctx.server.world.playerMove(start, down, mins, maxs);
-    if (tr.allsolid || tr.startsolid || tr.fraction === 1) {
-      RETURN_FLOAT(0);
-      return;
-    }
-    edicts.setVec(self, f.origin, tr.endpos);
-    edicts.linkAbs(self);
-    if (tr.plane.normal[2] > 0.7) {
-      edicts.setFloat(self, f.flags, flags | FL_ONGROUND);
-    }
-    RETURN_FLOAT(1);
+    RETURN_FLOAT(
+      svMoveStep(self, Math.cos(yaw) * dist, Math.sin(yaw) * dist) ? 1 : 0,
+    );
   }; // walkmove
   builtins[33] = fixme;
   builtins[34] = () => {
@@ -470,12 +657,11 @@ export function createBuiltins(ctx) {
   };
   for (let i = 60; i <= 66; i++) builtins[i] = () => {};
   builtins[67] = () => {
-    // SV_MoveToGoal — step toward goalentity; stop when CloseEnough
+    // SV_MoveToGoal (void in QC — chase / stop when CloseEnough)
     const self = G_INT(ofs.self);
     const dist = G_FLOAT(PARM(0));
     const flags = edicts.getFloat(self, f.flags) | 0;
     if (!(flags & (FL_ONGROUND | FL_FLY | FL_SWIM))) {
-      RETURN_FLOAT(0);
       return;
     }
     const goalOfs = progs.fieldByName.get('goalentity')?.ofs;
@@ -483,86 +669,37 @@ export function createBuiltins(ctx) {
     let goal = goalOfs != null ? edicts.getInt(self, goalOfs) | 0 : 0;
     const enemy = enemyOfs != null ? edicts.getInt(self, enemyOfs) | 0 : 0;
     if (!goal || edicts.free[goal]) goal = enemy;
-    if (!goal || edicts.free[goal]) {
-      RETURN_FLOAT(0);
-      return;
-    }
+    if (!goal || edicts.free[goal]) return;
 
-    // SV_CloseEnough — next step would hit goal → don't walk (QC attacks)
-    const amax = edicts.getVec(self, f.absmax);
-    const amin = edicts.getVec(self, f.absmin);
-    const gmax = edicts.getVec(goal, f.absmax);
-    const gmin = edicts.getVec(goal, f.absmin);
-    let close = true;
-    for (let i = 0; i < 3; i++) {
-      if (gmin[i] > amax[i] + dist || gmax[i] < amin[i] - dist) {
-        close = false;
-        break;
+    // CloseEnough vs goal — leave room for CheckAttack / th_melee
+    if (enemy && !edicts.free[enemy]) {
+      const amax = edicts.getVec(self, f.absmax);
+      const amin = edicts.getVec(self, f.absmin);
+      const gmax = edicts.getVec(goal, f.absmax);
+      const gmin = edicts.getVec(goal, f.absmin);
+      let close = true;
+      for (let i = 0; i < 3; i++) {
+        if (gmin[i] > amax[i] + dist || gmax[i] < amin[i] - dist) {
+          close = false;
+          break;
+        }
       }
-    }
-    if (close) {
-      RETURN_FLOAT(1);
-      return;
+      if (close) return;
     }
 
     const o = edicts.getVec(self, f.origin);
     const t = edicts.getVec(goal, f.origin);
     const dx = t[0] - o[0];
     const dy = t[1] - o[1];
-    const len = Math.hypot(dx, dy) || 1;
     let yaw = (Math.atan2(dy, dx) * 180) / Math.PI;
+    if (yaw < 0) yaw += 360;
     const idealOfs = progs.fieldByName.get('ideal_yaw')?.ofs;
     if (idealOfs != null) edicts.setFloat(self, idealOfs, yaw);
-    edicts.setVec(self, f.angles, [0, yaw, 0]);
 
-    const rad = (yaw * Math.PI) / 180;
-    const end = new Float32Array([
-      o[0] + Math.cos(rad) * dist,
-      o[1] + Math.sin(rad) * dist,
-      o[2],
-    ]);
-    const mins = new Float32Array(edicts.getVec(self, f.mins));
-    const maxs = new Float32Array(edicts.getVec(self, f.maxs));
-    const STEP = 18;
-    const raised = new Float32Array([end[0], end[1], end[2] + STEP]);
-    const down = new Float32Array([end[0], end[1], end[2] - STEP]);
-    const trUp = ctx.server.world.playerMove(o, raised, mins, maxs);
-    const start = !trUp.allsolid ? trUp.endpos : raised;
-    const tr = ctx.server.world.playerMove(start, down, mins, maxs);
-    if (tr.allsolid || tr.startsolid || tr.fraction === 1) {
-      // Blocked / cliff — try a random side step (SV_NewChaseDir lite)
-      const side = (Math.random() < 0.5 ? 1 : -1) * 90;
-      const syaw = ((yaw + side) * Math.PI) / 180;
-      const sideEnd = new Float32Array([
-        o[0] + Math.cos(syaw) * dist,
-        o[1] + Math.sin(syaw) * dist,
-        o[2],
-      ]);
-      const sideRaised = new Float32Array([
-        sideEnd[0],
-        sideEnd[1],
-        sideEnd[2] + STEP,
-      ]);
-      const sideDown = new Float32Array([
-        sideEnd[0],
-        sideEnd[1],
-        sideEnd[2] - STEP,
-      ]);
-      const su = ctx.server.world.playerMove(o, sideRaised, mins, maxs);
-      const ss = !su.allsolid ? su.endpos : sideRaised;
-      const st = ctx.server.world.playerMove(ss, sideDown, mins, maxs);
-      if (st.allsolid || st.startsolid || st.fraction === 1) {
-        RETURN_FLOAT(0);
-        return;
-      }
-      edicts.setVec(self, f.origin, st.endpos);
-      if (idealOfs != null) edicts.setFloat(self, idealOfs, yaw + side);
-    } else {
-      edicts.setVec(self, f.origin, tr.endpos);
+    // Vanilla: occasionally force NewChaseDir; else StepDirection then NewChaseDir
+    if ((Math.random() * 4) | 0 === 1 || !svStepDirection(self, yaw, dist)) {
+      svNewChaseDir(self, goal, dist);
     }
-    edicts.linkAbs(self);
-    edicts.setFloat(self, f.flags, (edicts.getFloat(self, f.flags) | 0) | FL_ONGROUND);
-    RETURN_FLOAT(1);
   }; // movetogoal
   builtins[68] = () => {
     // makestatic — free edict
