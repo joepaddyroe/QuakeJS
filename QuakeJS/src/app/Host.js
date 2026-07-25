@@ -89,12 +89,12 @@ export class Host {
         `QuakeJS — ${this._renderer.mapName}\n` +
         `FPS ${this._fps.toFixed(0)}   ${width}×${height}\n` +
         `pos ${cam.position[0].toFixed(0)} ${cam.position[1].toFixed(0)} ${cam.position[2].toFixed(0)}\n` +
-        `faces ${this._renderer.faceCount}  tris ${this._renderer.triCount}\n` +
+        `faces ${this._renderer.faceCount}  vis ${this._renderer.visibleFaces}  leaf ${this._renderer.viewLeaf}\n` +
         `\n` +
         `WASD move   Space up   Ctrl/C down\n` +
         `${lockHint}\n` +
         `\n` +
-        `No clip / no PVS / no sky-water yet.`;
+        `PVS on · sky/turb on · no clip yet.`;
     } else {
       this._hud.textContent =
         `QuakeJS — demo room (fallback)\n` +

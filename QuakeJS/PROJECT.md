@@ -53,7 +53,7 @@ If you are picking up this project with no chat history:
 5. Respect **§2–3** (SOLID + layers) before editing.
 6. After completing work, update **§12**, **§7**, and **§15 Changelog** in this file. Leave `README.md` alone unless the change is drastic for end users.
 
-**Current maturity (2026-07-25):** Loads `id1` PAK0/PAK1; draws **BSP world** (`maps/start.bsp`) with textures + lightmaps via WebGPU. Fly camera (no clip). Sky/water skipped. No PVS / entities / QuakeC yet.
+**Current maturity (2026-07-25):** Loads id1 PAKs; draws **BSP world** with textures, lightmaps, **PVS culling**, **sky** (dual layer), and **turb water**. Fly camera (no clip). No entities / QuakeC yet.
 
 ### Remaining tasks (priority order)
 
@@ -64,7 +64,7 @@ Use **§13** for file-level detail. Summary:
 | **P0** | Canvas + WebGPU shell, `Host` / frame loop | Done |
 | **P0** | Filesystem: PAK + `id1` search paths | Done |
 | **P1** | BSP / alias / sprite model load | Partial — BSP brush only |
-| **P1** | WebGPU world draw (brush + lightmaps) | Partial — no PVS/sky/turb |
+| **P1** | WebGPU world draw (brush + lightmaps) | Done (+ PVS/sky/turb) |
 | **P2** | Loopback client ↔ server + protocol | Not started |
 | **P2** | QuakeC VM (`pr_exec` / edicts / builtins) | Not started |
 | **P2** | Physics / movement (`sv_phys`, `world`) | Not started |
@@ -286,12 +286,14 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started
 - [x] Texture upload path (8-bit → RGBA GPU; lightmap atlas 128×128 pages)
 
 ### Phase 3 — Render (WebGPU)
-- [x] World brush draw with lightmaps (static, style 0; **no PVS**)
-- [ ] Turbulent water / sky (`gl_warp` / skybox or skysphere subset)
+- [x] World brush draw with lightmaps (static, style 0)
+- [x] PVS culling (`Mod_PointInLeaf` / `Mod_LeafPVS` / marksurfaces)
+- [x] Turbulent water / sky (`EmitWaterPolys` / `EmitSkyPolys` subset)
 - [ ] Alias models + viewentity weapon
 - [ ] Sprites + particles
 - [ ] Dynamic lights / lightstyles
 - [ ] 2D draw (`Draw_Pic`, console background)
+- [ ] Frustum cull on BSP nodes (`R_CullBox`)
 
 ### Phase 4 — Server + QuakeC
 - [ ] Edict pool + field layout (`progs.dat` CRC / defs)
@@ -337,8 +339,8 @@ Last audited: **2026-07-25** against `Quake-master/WinQuake`. Re-audit after maj
 ```
 Host / frame         ███░░░░░░░  ~30%   rAF Host.frame; map load at boot
 Filesystem (PAK)     ████████░░  ~80%   pak0+pak1; no loose files / -path
-Models (BSP/MDL/SPR) ████░░░░░░  ~40%   BSP brush; no MDL/SPR/nodes/PVS yet
-WebGPU render        █████░░░░░  ~50%   textured+lightmap world; no sky/turb/PVS
+Models (BSP/MDL/SPR) █████░░░░░  ~55%   BSP+nodes/leafs/vis; no MDL/SPR
+WebGPU render        ███████░░░  ~70%   solid+lm+PVS+sky+turb; no frustum/alias
 Server / world       ░░░░░░░░░░   0%
 QuakeC VM            ░░░░░░░░░░   0%
 Client / protocol    ░░░░░░░░░░   0%
@@ -354,18 +356,18 @@ Net (non-loopback)   ░░░░░░░░░░   0%
 |------|-----------|-------|
 | WebGPU bring-up | `GpuDevice.js`, `WebGpuRenderer.js` | Device + present |
 | PAK filesystem | `PakFile.js`, `FileSystem.js` | id1 pak0/pak1 |
-| BSP load | `BspModel.js` | BSP29 world surfaces + entities spawn |
-| World draw | `WorldRenderer.js` | Texture × lightmap; AllocBlock 128² pages |
+| BSP load | `BspModel.js` | BSP29 + nodes/leafs/vis/marksurfaces |
+| PVS | `BspModel.markLeaves` / `gatherVisibleFaces` | Leaf PVS → marksurfaces |
+| World draw | `WorldRenderer.js` | Texture × lightmap; sky dual-layer; turb warp |
 | Quake camera | `QuakeCamera.js` | Z-up, degrees, AngleVectors |
 
 ### 12.3 Partial — known gaps
 
 #### Rendering
-- No PVS / frustum culling — draws all world faces
-- Sky and `*` turb surfaces skipped
-- Lightstyles animated not implemented (style 0 @ 'm' scale only)
+- No frustum box cull on nodes (`R_CullBox`)
+- Lightstyles not animated (style 0 @ 'm' scale only)
+- Sky/turb are WebGPU approximations of `gl_warp.c` (no subdivided polys)
 - `DemoRoomRenderer` retained as load-failure fallback
-- Near/far / FOV not yet matched to `scr_fov` / GLQuake defaults exactly (90° FOV used)
 
 ### 12.4 Missing entirely (initial backlog)
 
@@ -394,7 +396,7 @@ Use this when choosing what to port next. Goal: **playable Quake 1 single-player
 | P0 | **PAK filesystem** | Done | `fs/PakFile.js`, `FileSystem.js` · `common.c` |
 | P1 | **BSP load + lightmaps** | Done (static) | `models/BspModel.js`, `WorldRenderer.js` · `model.c`, `gl_rsurf.c` |
 | P1 | **Clear + draw world** | Done | `WebGpuRenderer.js` · `gl_rmain.c` |
-| P1 | **PVS + sky/turb** | Visibility + water/sky | `WorldRenderer.js` · `gl_warp.c`, `Mod_LeafPVS` |
+| P1 | **PVS + sky/turb** | Done | `BspModel.js`, `WorldRenderer.js` · `gl_warp.c`, `Mod_LeafPVS` |
 | P2 | **Loopback net + SV/CL connect** | Real Quake architecture | `net/NetLoop.js`, `Server.js`, `Client.js` · `net_loop.c`, `sv_main.c`, `cl_main.c` |
 | P2 | **QuakeC VM + builtins** | Game rules live in progs | `progs/*` · `pr_exec.c`, `pr_edict.c`, `pr_cmds.c` |
 | P2 | **Physics / hulls** | Movement & combat | `ServerPhys.js`, `World.js` · `sv_phys.c`, `world.c` |
@@ -496,6 +498,7 @@ User supplies a legally obtained Quake `id1` directory (at least `pak0.pak`). Fi
 | 2026-07-25 | Initial project guide for QuakeJS (WebGPU + ES modules); WinQuake reference; greenfield status |
 | 2026-07-25 | **Phase 0 shell:** WebGPU swapchain, `Host`/`GameLoop`, `DemoRoomRenderer` scaffolding + fly camera (WASD / pointer lock) |
 | 2026-07-25 | **Phase 1 data + world draw:** `PakFile`/`FileSystem`, BSP29 `BspModel`, `WorldRenderer` (texture×lightmap), `QuakeCamera` spawn on `maps/start.bsp` |
+| 2026-07-25 | **PVS + sky/turb:** nodes/leafs/vis, marksurfaces culling; dual-layer sky + water warp shaders |
 
 ---
 

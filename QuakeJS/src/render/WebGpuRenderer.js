@@ -23,6 +23,9 @@ export class WebGpuRenderer {
     this.mapName = '';
     this.faceCount = 0;
     this.triCount = 0;
+    this.visibleFaces = 0;
+    this.viewLeaf = 0;
+    this._time = 0;
   }
 
   /** @returns {FlyCamera|QuakeCamera} */
@@ -62,14 +65,24 @@ export class WebGpuRenderer {
   /**
    * @param {number} width
    * @param {number} height
-   * @param {number} _dt
+   * @param {number} dt
    */
-  frame(width, height, _dt) {
+  frame(width, height, dt) {
+    this._time = (this._time || 0) + dt;
     const { device, context } = this._gpu;
     const colorView = context.getCurrentTexture().createView();
     const encoder = device.createCommandEncoder();
     if (this.mode === 'world') {
-      this._world.draw(encoder, colorView, this._quakeCamera.lookAtArgs(), width, height);
+      this._world.draw(
+        encoder,
+        colorView,
+        this._quakeCamera.lookAtArgs(),
+        width,
+        height,
+        this._time,
+      );
+      this.visibleFaces = this._world.visibleFaces;
+      this.viewLeaf = this._world.viewLeaf;
     } else {
       this._demo.draw(encoder, colorView, this._demoCamera.lookAtArgs(), width, height);
     }

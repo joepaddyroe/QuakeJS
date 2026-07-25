@@ -74,12 +74,39 @@ export function findPlayerStart(entities) {
  * @property {number} lightofs
  * @property {number} planenum
  * @property {number} side
+ * @property {boolean} planeBack
  * @property {Int32Array} texturemins
  * @property {Int32Array} extents
- * @property {boolean} skip
+ * @property {'solid'|'sky'|'turb'|'skip'} kind
  * @property {number} lightS
  * @property {number} lightT
  * @property {number} lightmapIndex
+ * @property {number} visframe
+ */
+
+/**
+ * @typedef {object} BspNode
+ * @property {number} planenum
+ * @property {number[]} children  child index; >=0 node, <0 → leaf = -1-child
+ * @property {Float32Array} mins
+ * @property {Float32Array} maxs
+ * @property {number} firstface
+ * @property {number} numfaces
+ * @property {number} parent  node index or -1
+ * @property {number} visframe
+ * @property {number} contents  0 for nodes
+ */
+
+/**
+ * @typedef {object} BspLeaf
+ * @property {number} contents
+ * @property {number} visofs
+ * @property {Float32Array} mins
+ * @property {Float32Array} maxs
+ * @property {number} firstmarksurface
+ * @property {number} nummarksurfaces
+ * @property {number} parent  node index or -1
+ * @property {number} visframe
  */
 
 export class BspModel {
@@ -111,12 +138,27 @@ export class BspModel {
     this.texinfo = [];
     /** @type {BspFace[]} */
     this.faces = [];
-    /** @type {{ mins: Float32Array, maxs: Float32Array, origin: Float32Array, headnode: number[], firstface: number, numfaces: number }[]} */
+    /** @type {BspNode[]} */
+    this.nodes = [];
+    /** @type {BspLeaf[]} */
+    this.leafs = [];
+    /** @type {Uint16Array} */
+    this.marksurfaces = new Uint16Array(0);
+    /** @type {Uint8Array|null} */
+    this.visdata = null;
+    /** vis leaf count for PVS row size (submodel 0 visleafs) */
+    this.numVisLeafs = 0;
+    /** @type {{ mins: Float32Array, maxs: Float32Array, origin: Float32Array, headnode: number[], firstface: number, numfaces: number, visleafs: number }[]} */
     this.submodels = [];
     /** @type {string} */
     this.entities = '';
     /** @type {{ origin: Float32Array, angles: Float32Array } | null} */
     this.playerStart = null;
+
+    this._visframecount = 0;
+    this._framecount = 0;
+    /** @type {Uint8Array} */
+    this._decompressedVis = new Uint8Array(0);
 
     this._load();
   }
@@ -143,8 +185,14 @@ export class BspModel {
     this._loadPlanes();
     this._loadTexinfo();
     this._loadFaces();
+    this._loadMarksurfaces();
+    this._loadVisibility();
+    this._loadLeafs();
+    this._loadNodes();
     this._loadEntities();
     this._loadSubmodels();
+    this.numVisLeafs = this.submodels[0] ? this.submodels[0].visleafs : this.leafs.length;
+    this._decompressedVis = new Uint8Array((this.numVisLeafs + 7) >> 3);
     this.playerStart = findPlayerStart(this.entities);
   }
 
@@ -318,22 +366,125 @@ export class BspModel {
         lightofs,
         planenum,
         side,
+        planeBack: side !== 0,
         texturemins: new Int32Array(2),
         extents: new Int32Array(2),
-        skip: false,
+        kind: 'skip',
         lightS: 0,
         lightT: 0,
         lightmapIndex: -1,
+        visframe: -1,
       };
 
       const ti = this.texinfo[texinfo];
       const tex = ti ? this.textures[ti.miptex] : null;
-      if (!tex || tex.sky || tex.turb || (ti.flags & TEX_SPECIAL)) {
-        face.skip = true;
+      if (!tex || !tex.pixels) {
+        face.kind = 'skip';
+      } else if (tex.sky) {
+        face.kind = 'sky';
+      } else if (tex.turb || (ti.flags & TEX_SPECIAL)) {
+        // TEX_SPECIAL without sky/turb name still skip lightmap; treat turb by name
+        face.kind = tex.turb ? 'turb' : 'skip';
       } else {
+        face.kind = 'solid';
         this._calcSurfaceExtents(face);
       }
       this.faces[i] = face;
+    }
+  }
+
+  _loadMarksurfaces() {
+    const { ofs, len } = this._lump(LUMP_MARKSURFACES);
+    const count = len / 2;
+    const arr = new Uint16Array(count);
+    for (let i = 0; i < count; i++) {
+      arr[i] = this._view.getUint16(ofs + i * 2, true);
+    }
+    this.marksurfaces = arr;
+  }
+
+  _loadVisibility() {
+    const { ofs, len } = this._lump(LUMP_VISIBILITY);
+    if (len <= 0) {
+      this.visdata = null;
+      return;
+    }
+    this.visdata = this._u8.subarray(ofs, ofs + len);
+  }
+
+  _loadLeafs() {
+    const { ofs, len } = this._lump(LUMP_LEAFS);
+    const count = len / 28;
+    const v = this._view;
+    this.leafs = new Array(count);
+    for (let i = 0; i < count; i++) {
+      const o = ofs + i * 28;
+      this.leafs[i] = {
+        contents: v.getInt32(o, true),
+        visofs: v.getInt32(o + 4, true),
+        mins: new Float32Array([
+          v.getInt16(o + 8, true),
+          v.getInt16(o + 10, true),
+          v.getInt16(o + 12, true),
+        ]),
+        maxs: new Float32Array([
+          v.getInt16(o + 14, true),
+          v.getInt16(o + 16, true),
+          v.getInt16(o + 18, true),
+        ]),
+        firstmarksurface: v.getUint16(o + 20, true),
+        nummarksurfaces: v.getUint16(o + 22, true),
+        parent: -1,
+        visframe: -1,
+      };
+    }
+  }
+
+  _loadNodes() {
+    const { ofs, len } = this._lump(LUMP_NODES);
+    const count = len / 24;
+    const v = this._view;
+    this.nodes = new Array(count);
+    for (let i = 0; i < count; i++) {
+      const o = ofs + i * 24;
+      this.nodes[i] = {
+        planenum: v.getInt32(o, true),
+        children: [v.getInt16(o + 4, true), v.getInt16(o + 6, true)],
+        mins: new Float32Array([
+          v.getInt16(o + 8, true),
+          v.getInt16(o + 10, true),
+          v.getInt16(o + 12, true),
+        ]),
+        maxs: new Float32Array([
+          v.getInt16(o + 14, true),
+          v.getInt16(o + 16, true),
+          v.getInt16(o + 18, true),
+        ]),
+        firstface: v.getUint16(o + 20, true),
+        numfaces: v.getUint16(o + 22, true),
+        parent: -1,
+        visframe: -1,
+        contents: 0,
+      };
+    }
+    if (count > 0) this._setParent(0, -1);
+  }
+
+  /**
+   * @param {number} nodeIndex
+   * @param {number} parent
+   */
+  _setParent(nodeIndex, parent) {
+    const node = this.nodes[nodeIndex];
+    node.parent = parent;
+    for (let j = 0; j < 2; j++) {
+      const c = node.children[j];
+      if (c >= 0) {
+        this._setParent(c, nodeIndex);
+      } else {
+        const leafIndex = -1 - c;
+        this.leafs[leafIndex].parent = nodeIndex;
+      }
     }
   }
 
@@ -411,10 +562,135 @@ export class BspModel {
         v.getInt32(o + 44, true),
         v.getInt32(o + 48, true),
       ];
-      // visleafs at +52
+      const visleafs = v.getInt32(o + 52, true);
       const firstface = v.getInt32(o + 56, true);
       const numfaces = v.getInt32(o + 60, true);
-      this.submodels[i] = { mins, maxs, origin, headnode, firstface, numfaces };
+      this.submodels[i] = { mins, maxs, origin, headnode, firstface, numfaces, visleafs };
+    }
+  }
+
+  /**
+   * @param {Float32Array|number[]} p
+   * @returns {number} leaf index
+   */
+  pointInLeaf(p) {
+    let nodeIndex = 0;
+    while (true) {
+      const node = this.nodes[nodeIndex];
+      const plane = this.planes[node.planenum];
+      const d =
+        p[0] * plane.normal[0] +
+        p[1] * plane.normal[1] +
+        p[2] * plane.normal[2] -
+        plane.dist;
+      const c = d > 0 ? node.children[0] : node.children[1];
+      if (c < 0) return -1 - c;
+      nodeIndex = c;
+    }
+  }
+
+  /**
+   * @param {number} leafIndex
+   * @returns {Uint8Array} bitset over vis leafs (leafs 1..numVisLeafs)
+   */
+  leafPVS(leafIndex) {
+    const row = (this.numVisLeafs + 7) >> 3;
+    const out = this._decompressedVis;
+    if (leafIndex === 0 || !this.visdata) {
+      out.fill(0xff, 0, row);
+      return out;
+    }
+    const leaf = this.leafs[leafIndex];
+    if (leaf.visofs < 0) {
+      out.fill(0xff, 0, row);
+      return out;
+    }
+    let inn = leaf.visofs;
+    let outp = 0;
+    const vis = this.visdata;
+    while (outp < row) {
+      const b = vis[inn++];
+      if (b) {
+        out[outp++] = b;
+        continue;
+      }
+      let c = vis[inn++];
+      while (c-- > 0 && outp < row) out[outp++] = 0;
+    }
+    return out;
+  }
+
+  /**
+   * Mark nodes reachable from the view leaf's PVS (R_MarkLeaves).
+   * @param {number} viewLeaf
+   */
+  markLeaves(viewLeaf) {
+    this._visframecount++;
+    const vis = this.leafPVS(viewLeaf);
+    const vf = this._visframecount;
+    for (let i = 0; i < this.numVisLeafs; i++) {
+      if (vis[i >> 3] & (1 << (i & 7))) {
+        let parent = this.leafs[i + 1].parent;
+        while (parent >= 0) {
+          const node = this.nodes[parent];
+          if (node.visframe === vf) break;
+          node.visframe = vf;
+          parent = node.parent;
+        }
+        this.leafs[i + 1].visframe = vf;
+      }
+    }
+  }
+
+  /**
+   * Collect visible face indices via PVS marksurfaces (R_MarkLeaves + leaf marks).
+   * @param {Float32Array|number[]} modelorg  view origin
+   * @param {number[]} solidOut
+   * @param {number[]} skyOut
+   * @param {number[]} turbOut
+   */
+  gatherVisibleFaces(modelorg, solidOut, skyOut, turbOut) {
+    this._framecount++;
+    const frame = this._framecount;
+    const vf = this._visframecount;
+    solidOut.length = 0;
+    skyOut.length = 0;
+    turbOut.length = 0;
+
+    // Mark surfaces belonging to PVS leaves
+    for (let i = 0; i < this.numVisLeafs; i++) {
+      const leaf = this.leafs[i + 1];
+      if (leaf.visframe !== vf) continue;
+      if (leaf.contents === -2) continue; // CONTENTS_SOLID
+      for (let j = 0; j < leaf.nummarksurfaces; j++) {
+        const fi = this.marksurfaces[leaf.firstmarksurface + j];
+        this.faces[fi].visframe = frame;
+      }
+    }
+
+    const world = this.submodels[0];
+    if (!world) return;
+    const first = world.firstface;
+    const last = first + world.numfaces;
+
+    for (let fi = first; fi < last; fi++) {
+      const face = this.faces[fi];
+      if (face.visframe !== frame) continue;
+      if (face.kind === 'skip' || face.numEdges < 3) continue;
+
+      if (face.kind === 'solid' || face.kind === 'sky') {
+        const plane = this.planes[face.planenum];
+        const dot =
+          modelorg[0] * plane.normal[0] +
+          modelorg[1] * plane.normal[1] +
+          modelorg[2] * plane.normal[2] -
+          plane.dist;
+        if (((dot < 0) ? 1 : 0) ^ (face.planeBack ? 1 : 0)) continue;
+      }
+
+      if (face.kind === 'solid') solidOut.push(fi);
+      else if (face.kind === 'sky') skyOut.push(fi);
+      else if (face.kind === 'turb') turbOut.push(fi);
     }
   }
 
