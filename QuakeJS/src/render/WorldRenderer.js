@@ -6,6 +6,7 @@
 import { mat4LookAt, mat4Multiply, mat4Perspective, mat4Translate } from '../math/Mat4.js';
 import { LightStyles } from './LightStyles.js';
 import { MAX_DLIGHTS } from './DynamicLights.js';
+import { setFrustum90 } from '../math/Frustum.js';
 
 const BLOCK_WIDTH = 128;
 const BLOCK_HEIGHT = 128;
@@ -1152,7 +1153,31 @@ export class WorldRenderer {
     const leaf = bsp.pointInLeaf(camera.eye);
     this.viewLeaf = leaf;
     bsp.markLeaves(leaf);
-    bsp.gatherVisibleFaces(camera.eye, this._solidOut, this._skyOut, this._turbOut);
+
+    const fx = camera.center[0] - camera.eye[0];
+    const fy = camera.center[1] - camera.eye[1];
+    const fz = camera.center[2] - camera.eye[2];
+    const fl = Math.hypot(fx, fy, fz) || 1;
+    const forward = [fx / fl, fy / fl, fz / fl];
+    const up = camera.up;
+    const right = [
+      forward[1] * up[2] - forward[2] * up[1],
+      forward[2] * up[0] - forward[0] * up[2],
+      forward[0] * up[1] - forward[1] * up[0],
+    ];
+    const rl = Math.hypot(right[0], right[1], right[2]) || 1;
+    right[0] /= rl;
+    right[1] /= rl;
+    right[2] /= rl;
+    const frustum = setFrustum90(camera.eye, forward, right, up);
+
+    bsp.gatherVisibleFaces(
+      camera.eye,
+      this._solidOut,
+      this._skyOut,
+      this._turbOut,
+      frustum,
+    );
     this.visibleFaces =
       this._solidOut.length + this._skyOut.length + this._turbOut.length;
 

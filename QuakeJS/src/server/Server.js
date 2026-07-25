@@ -30,7 +30,7 @@ import { World } from './World.js';
 import { PLAYER_MINS, PLAYER_MAXS } from './PlayerMove.js';
 import { LightStyles } from '../render/LightStyles.js';
 import { SizeBuf } from '../net/SizeBuf.js';
-import { MSG, svc } from '../protocol/Protocol.js';
+import { MSG, clc, svc } from '../protocol/Protocol.js';
 import { MAX_LIGHTSTYLES } from '../render/LightStyles.js';
 
 /**
@@ -138,6 +138,17 @@ export class Server {
     /** Realtime for dlights (synced from renderer each frame). */
     this.clientTime = 0;
     this._clientLoadoutReady = false;
+    this._clientSpawned = false;
+    /** Last usercmd from clc_move */
+    this.lastCmd = {
+      forwardmove: 0,
+      sidemove: 0,
+      upmove: 0,
+      buttons: 0,
+      impulse: 0,
+      angles: new Float32Array(3),
+    };
+    this._clientMsg = new SizeBuf(256);
     this.edicts.time = this.time;
     /** @type {string|null} */
     this.pendingMap = null;
@@ -326,6 +337,7 @@ export class Server {
    * Attach loopback socket after client connects.
    * @param {import('../net/NetLoop.js').NetLoop} net
    * @param {import('../net/NetLoop.js').LoopSocket} socket
+   * @returns {{ origin: Float32Array, pitch: number, yaw: number } | null}
    */
   attachNet(net, socket) {
     this.net = net;
@@ -341,7 +353,141 @@ export class Server {
       this.reliable.writeByte(i);
       this.reliable.writeString(ls.map);
     }
+    this.putClientInServer(1);
     this.sendClientMessages();
+    return this._clientSpawnPose(1);
+  }
+
+  /**
+   * Host_Spawn subset — SetNewParms + ClientConnect + PutClientInServer.
+   * @param {number} [ent=1]
+   * @returns {{ origin: Float32Array, pitch: number, yaw: number } | null}
+   */
+  putClientInServer(ent = 1) {
+    if (this._clientSpawned) {
+      return this._clientSpawnPose(ent);
+    }
+    const progs = this.progs;
+    const edicts = this.edicts;
+    const gi = progs.globalsI;
+    const gf = progs.globalsF;
+    const ofs = progs.ofs;
+    const f = progs.f;
+
+    edicts.free[ent] = false;
+    if (!this._playerClassname) {
+      this._playerClassname = progs.allocString('player');
+    }
+    edicts.setInt(ent, f.classname, this._playerClassname);
+    edicts.setFloat(ent, f.colormap, ent);
+    const teamOfs = progs.fieldByName.get('team')?.ofs;
+    if (teamOfs != null) edicts.setFloat(ent, teamOfs, 1);
+
+    const run = (progOfs, label) => {
+      const fn = gi[progOfs];
+      if (!fn) return;
+      gi[ofs.self] = ent;
+      gi[ofs.other] = 0;
+      gf[ofs.time] = this.time;
+      try {
+        this.exec.execute(fn);
+      } catch (err) {
+        this.exec.reset();
+        console.error(label, err);
+      }
+    };
+
+    run(ofs.SetNewParms, 'SetNewParms');
+    run(ofs.ClientConnect, 'ClientConnect');
+    run(ofs.PutClientInServer, 'PutClientInServer');
+
+    this._clientSpawned = true;
+    this._clientLoadoutReady = true;
+    // FP: never draw third-person body on local client
+    edicts.setInt(ent, f.model, 0);
+    edicts.setFloat(ent, f.modelindex, 0);
+    edicts.linkAbs(ent);
+
+    const pose = this._clientSpawnPose(ent);
+    this.writePrint('PutClientInServer\n');
+    return pose;
+  }
+
+  /**
+   * @param {number} ent
+   * @returns {{ origin: Float32Array, pitch: number, yaw: number } | null}
+   */
+  _clientSpawnPose(ent) {
+    const f = this.progs.f;
+    const edicts = this.edicts;
+    if (edicts.free[ent]) return null;
+    const o = edicts.getVec(ent, f.origin);
+    const ang = edicts.getVec(ent, f.angles);
+    const va = edicts.getVec(ent, f.v_angle);
+    return {
+      origin: new Float32Array([o[0], o[1], o[2]]),
+      pitch: va[0] || ang[0] || 0,
+      yaw: va[1] || ang[1] || 0,
+    };
+  }
+
+  /**
+   * SV_ReadClientMessage subset — clc_move / stringcmd.
+   */
+  readClientMessages() {
+    if (!this.net || !this.netSocket) return;
+    while (this.net.getMessage(this.netSocket, this._clientMsg)) {
+      const msg = this._clientMsg;
+      while (msg.remaining > 0) {
+        const cmd = msg.readByte();
+        if (cmd < 0) break;
+        if (cmd === clc.nop) continue;
+        if (cmd === clc.disconnect) break;
+        if (cmd === clc.move) {
+          this._readClientMove(msg);
+          continue;
+        }
+        if (cmd === clc.stringcmd) {
+          msg.readString();
+          continue;
+        }
+        break;
+      }
+    }
+  }
+
+  /**
+   * SV_ReadClientMove
+   * @param {SizeBuf} msg
+   */
+  _readClientMove(msg) {
+    msg.readFloat(); // ping stamp
+    const pitch = msg.readAngle();
+    const yaw = msg.readAngle();
+    const roll = msg.readAngle();
+    const forwardmove = msg.readShort();
+    const sidemove = msg.readShort();
+    const upmove = msg.readShort();
+    const bits = msg.readByte();
+    const impulse = msg.readByte();
+
+    this.lastCmd.forwardmove = forwardmove;
+    this.lastCmd.sidemove = sidemove;
+    this.lastCmd.upmove = upmove;
+    this.lastCmd.buttons = bits;
+    this.lastCmd.impulse = impulse;
+    this.lastCmd.angles[0] = pitch;
+    this.lastCmd.angles[1] = yaw;
+    this.lastCmd.angles[2] = roll;
+
+    const ent = 1;
+    const f = this.progs.f;
+    const edicts = this.edicts;
+    if (edicts.free[ent]) return;
+    edicts.setVec(ent, f.v_angle, [pitch, yaw, roll]);
+    edicts.setFloat(ent, f.button0, bits & 1 ? 1 : 0);
+    edicts.setFloat(ent, f.button2, bits & 2 ? 1 : 0);
+    if (impulse) edicts.setFloat(ent, f.impulse, impulse);
   }
 
   /**
@@ -940,7 +1086,10 @@ export class Server {
     edicts.setVec(ent, f.v_angle, [player.pitch || 0, player.yaw || 0, 0]);
     edicts.setFloat(ent, f.movetype, MOVETYPE_WALK);
     edicts.setFloat(ent, f.solid, SOLID_SLIDEBOX);
-    edicts.setFloat(ent, f.health, player.health ?? 100);
+    // After PutClientInServer, QC owns health/items — do not clobber each frame
+    if (!this._clientSpawned) {
+      edicts.setFloat(ent, f.health, player.health ?? 100);
+    }
     // Never draw a third-person body on the local client
     edicts.setInt(ent, f.model, 0);
     edicts.setFloat(ent, f.modelindex, 0);
@@ -948,7 +1097,7 @@ export class Server {
     if (player.onground) flags |= FL_ONGROUND;
     edicts.setFloat(ent, f.flags, flags);
     edicts.setInt(ent, f.groundentity, player.groundEntity | 0);
-    this._ensureClientLoadout(ent);
+    if (!this._clientSpawned) this._ensureClientLoadout(ent);
     edicts.linkAbs(ent);
   }
 
@@ -971,7 +1120,7 @@ export class Server {
   }
 
   /**
-   * SetNewParms + W_SetCurrentAmmo subset until full PutClientInServer.
+   * SetNewParms + W_SetCurrentAmmo subset — fallback if PutClientInServer not run.
    * @param {number} ent
    */
   _ensureClientLoadout(ent) {

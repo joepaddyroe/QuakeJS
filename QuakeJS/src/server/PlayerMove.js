@@ -61,6 +61,9 @@ export class PlayerMove {
     this.viewOfsZ = VIEW_OFS_Z;
     /** Stair smooth Z (view.c oldz) — tracks origin[2] with lag on step-ups */
     this._smoothZ = 0;
+    /** V_CalcBob cycle (radians-ish progress) */
+    this._bobCycle = 0;
+    this._bob = 0;
   }
 
   /**
@@ -81,14 +84,14 @@ export class PlayerMove {
   }
 
   /**
-   * Eye position for rendering / PVS (includes stair view smoothing).
+   * Eye position for rendering / PVS (includes stair view smoothing + bob).
    * @returns {Float32Array}
    */
   eye() {
     return new Float32Array([
       this.origin[0],
       this.origin[1],
-      this._smoothZ + this.viewOfsZ,
+      this._smoothZ + this.viewOfsZ + this._bob,
     ]);
   }
 
@@ -133,6 +136,7 @@ export class PlayerMove {
     if (this.noclip) {
       this._noclipMove(dt, cmd);
       this._smoothZ = this.origin[2];
+      this._bob = 0;
       return;
     }
 
@@ -154,6 +158,26 @@ export class PlayerMove {
 
     this._walkMove(dt);
     this._updateStepSmooth(dt);
+    this._updateBob(dt);
+  }
+
+  /**
+   * view.c V_CalcBob subset — vertical eye bob from XY speed.
+   * @param {number} dt
+   */
+  _updateBob(dt) {
+    const xyspeed = Math.hypot(this.velocity[0], this.velocity[1]);
+    if (this.onground && xyspeed > 20) {
+      this._bobCycle += dt * (0.3 + xyspeed * 0.002);
+      const bob =
+        Math.sin(this._bobCycle * Math.PI * 2) *
+        Math.min(xyspeed, 400) *
+        0.015;
+      this._bob = bob;
+    } else {
+      this._bob *= Math.max(0, 1 - dt * 8);
+      if (Math.abs(this._bob) < 0.05) this._bob = 0;
+    }
   }
 
   /**

@@ -5,7 +5,9 @@
 import { GameLoop } from './app/GameLoop.js';
 import { Host } from './app/Host.js';
 import { SoundSystem } from './audio/SoundSystem.js';
+import { CdAudio } from './audio/CdAudio.js';
 import { FileSystem } from './fs/FileSystem.js';
+import { pickId1Directory, showFsPickerPrompt } from './fs/Id1Picker.js';
 import { createGpuContext } from './platform/GpuDevice.js';
 import { KeyboardInput } from './platform/KeyboardInput.js';
 import { PointerLook } from './platform/PointerLook.js';
@@ -52,8 +54,18 @@ async function main() {
     await fs.initId1('./assets/id1');
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    showError(`Failed to load Quake data.\n\n${msg}\n\nPlace pak0.pak under assets/id1/`);
-    return;
+    const choice = await showFsPickerPrompt(
+      `Failed to load Quake data from ./assets/id1.\n\n${msg}\n\nSelect your id1 folder (or pak0.pak / pak1.pak).`,
+    );
+    if (choice !== 'pick') return;
+    try {
+      const files = await pickId1Directory();
+      await fs.initFromFiles(files);
+    } catch (pickErr) {
+      const pmsg = pickErr instanceof Error ? pickErr.message : String(pickErr);
+      showError(`Could not load selected Quake data.\n\n${pmsg}`);
+      return;
+    }
   }
 
   const keyboard = new KeyboardInput();
@@ -65,6 +77,7 @@ async function main() {
   renderer.init();
 
   const sound = new SoundSystem(fs);
+  const cd = new CdAudio();
 
   const statusBar = new StatusBar(sbarCanvas);
   try {
@@ -143,13 +156,17 @@ async function main() {
     menu,
     overlay,
     console: consoleUi,
+    cd,
   });
   hostRef = host;
+  host.init();
   host.syncPointerFromCamera();
   menu.openMain();
 
   const loop = new GameLoop(host);
   loop.start();
+
+  window.addEventListener('beforeunload', () => host.shutdown());
 }
 
 main().catch((err) => {

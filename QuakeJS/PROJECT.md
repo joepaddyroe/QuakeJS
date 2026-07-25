@@ -53,7 +53,7 @@ If you are picking up this project with no chat history:
 5. Respect **§2–3** (SOLID + layers) before editing.
 6. After completing work, update **§12**, **§7**, and **§15 Changelog** in this file. Leave `README.md` alone unless the change is drastic for end users.
 
-**Current maturity (2026-07-25):** id1 PAK + BSP world + hull walk + QuakeC + brush ents + alias/sprites + lightstyles/dlights + particles + FP shotgun + UI (sbar/menu/conback) + **loopback client↔server** (print/TE/lightstyle). Movement still local; no entity baselines yet.
+**Current maturity (2026-07-25):** id1 PAK + BSP world + hull walk + QuakeC + brush ents + alias/sprites + lightstyles/dlights + particles + FP shotgun + UI + loopback + **PutClientInServer** + **clc_move** (local PlayerMove still) + frustum cull + file picker + centerprint + CD stub.
 
 ### Remaining tasks (priority order)
 
@@ -61,15 +61,15 @@ Use **§13** for file-level detail. Summary:
 
 | Priority | Task | Status |
 |----------|------|--------|
-| **P0** | Canvas + WebGPU shell, `Host` / frame loop | Done |
-| **P0** | Filesystem: PAK + `id1` search paths | Done |
+| **P0** | Canvas + WebGPU shell, `Host` / frame loop | Done — init/shutdown stages |
+| **P0** | Filesystem: PAK + `id1` search paths | Done — + file picker fallback |
 | **P1** | BSP / alias / sprite model load | Done — BSP + MDL + SPR |
-| **P1** | WebGPU world draw (brush + lightmaps) | Done (+ PVS/sky/turb/lightstyles) |
-| **P2** | Loopback client ↔ server + protocol | Partial — connect + svc print/TE/lightstyle |
-| **P2** | QuakeC VM (`pr_exec` / edicts / builtins) | Partial — spawn/think/touch/changelevel |
-| **P2** | Physics / movement (`sv_phys`, `world`) | Partial — walk + brush clip + PUSH |
-| **P3** | View weapon, particles, status bar, menu | Partial — shotgun + particles + sprites + sbar + conback console + menu |
-| **P3** | Sound (DMA-style mix → Web Audio) | Partial — SFX + spatialize |
+| **P1** | WebGPU world draw (brush + lightmaps) | Done (+ PVS/sky/turb/lightstyles/frustum) |
+| **P2** | Loopback client ↔ server + protocol | Partial — print/TE/lightstyle + clc_move + PutClientInServer |
+| **P2** | QuakeC VM (`pr_exec` / edicts / builtins) | Partial — spawn/think/touch/changelevel/PutClientInServer |
+| **P2** | Physics / movement (`sv_phys`, `world`) | Partial — walk + brush clip + PUSH (local PlayerMove) |
+| **P3** | View weapon, particles, status bar, menu | Partial — shotgun + particles + sprites + sbar + conback + centerprint |
+| **P3** | Sound (DMA-style mix → Web Audio) | Partial — SFX + spatialize + CD stub |
 | **P4** | Saves, demos, console polish | Not started |
 | **P5** | QuakeWorld / multiplayer | Not started |
 
@@ -270,14 +270,14 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started
 - [x] `GameLoop` → `Host.frame`
 - [x] Demo-room present path (`DemoRoomRenderer.js` — **TEMP scaffolding**, not BSP)
 - [x] Fly camera (WASD + pointer lock) to exercise view matrix
-- [ ] Stub `Host` init/shutdown matching `Host_Init` stages (filesystem before vid)
+- [x] Stub `Host` init/shutdown matching `Host_Init` stages (filesystem before vid)
 
 ### Phase 1 — Data / filesystem
 - [x] `PakFile` — PAK directory and lump I/O
 - [x] `FileSystem` — search paths (`pak1` then `pak0`), `load` / `has`
 - [x] Palette load (`gfx/palette.lmp`)
 - [x] `gfx.wad` picture lumps for 2D (later menus/console) — sbar + menu LMPs
-- [ ] User file picker / directory handle when fetch of `id1` fails
+- [x] User file picker / directory handle when fetch of `id1` fails
 
 ### Phase 2 — Models
 - [x] Brush BSP load (verts, edges, surfaces, textures, lighting, texinfo, faces, entities, submodels)
@@ -295,7 +295,7 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started
 - [x] Lightstyles (`R_AnimateLight` + multi-layer lightmaps)
 - [x] Dynamic lights (muzzle flash / explosion dlights into lightmaps)
 - [x] 2D draw (`Draw_Pic` / conchars + console `conback`)
-- [ ] Frustum cull on BSP nodes (`R_CullBox`)
+- [x] Frustum cull on BSP nodes (`R_CullBox`)
 
 ### Phase 4 — Server + QuakeC
 - [x] Edict pool + field layout (`progs.dat` CRC / defs)
@@ -309,13 +309,13 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started
 - [x] Clip player against brush entities (`World.brushes` / submodel hulls)
 - [x] `changelevel` builtin + Host map reload (`e1m1` …)
 - [x] Client connect via **loopback** (`NetLoop` + `Client` parse print/TE/lightstyle)
-- [ ] Fuller builtins + `PutClientInServer` (loadout + shotgun fire anim stub done)
-- [ ] `clc_move` usercmds over loopback (still local PlayerMove)
+- [x] Fuller builtins + `PutClientInServer` (QC SetNewParms / ClientConnect / PutClientInServer)
+- [x] `clc_move` usercmds over loopback (angles/buttons; walk still local PlayerMove)
 
 ### Phase 5 — Client playable slice
 - [ ] `CL_SendCmd` / `SV_ClientThink` movement via protocol
 - [ ] `CL_ParseServerMessage` entity baseline / updates
-- [ ] View punch, bob, roll (`view.c`) subset
+- [~] View punch, bob, roll (`view.c`) subset — bob done; punch/roll later
 - [ ] Point entities: items, monsters, doors/plats/triggers via QuakeC (no hand-rolled Doom-style AI)
 
 ### Phase 6 — UI / meta
@@ -323,12 +323,12 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started
 - [x] Menus (`menu.c`) — main / singleplayer / options / help / quit
 - [x] Status bar (`sbar.c`) — health / armor / ammo / face + inventory strip
 - [x] Loading plaque / intermission / finale messages
-- [ ] Notify / centerprint polish
+- [x] Notify / centerprint polish
 
 ### Phase 7 — Audio
 - [x] SFX from PAK (`sound/*.wav`) via Web Audio
 - [x] Ambient channel / spatialization subset (`S_StartSound` parity)
-- [ ] CD / music track stubs (optional HTMLAudio or silent)
+- [x] CD / music track stubs (optional HTMLAudio or silent)
 
 ### Phase 8 — Persistence & demos
 - [ ] Save / load (`Host_Savegame` / `Host_Loadgame` — Quake text save format)
@@ -348,10 +348,10 @@ Last audited: **2026-07-25** against `Quake-master/WinQuake`. Re-audit after maj
 ### 12.1 Subsystem maturity
 
 ```
-Host / frame         █████░░░░░  ~50%   rAF Host.frame; loopback flush + client parse
-Filesystem (PAK)     ████████░░  ~80%   pak0+pak1; no loose files / -path
+Host / frame         ██████░░░░  ~60%   Host_Init/Shutdown stub; loopback + clc_move + PutClientInServer
+Filesystem (PAK)     █████████░  ~90%   pak0+pak1; file-picker fallback when fetch fails
 Models (BSP/MDL/SPR) ████████░░  ~80%   BSP + alias MDL + SPR
-WebGPU render        █████████░  ~90%   world+brush+alias+sprites+lightstyles+dlights+view weapon+particles; no frustum
+WebGPU render        ██████████  ~95%   world+brush+alias+sprites+lightstyles+dlights+view weapon+particles+frustum
 Server / world       ███████░░░  ~65%   hull walk + pushers + brush clip
 QuakeC VM            ██████░░░░  ~55%   exec+edicts+builtins; doors/triggers on start
 Client / protocol    ███░░░░░░░  ~30%   loopback + parse print/TE/lightstyle; no entity updates
@@ -545,6 +545,7 @@ User supplies a legally obtained Quake `id1` directory (at least `pak0.pak`). Fi
 | 2026-07-25 | **Dynamic lights:** `DynamicLights` pool; muzzle flash + TE_EXPLOSION; `R_MarkLights` / `R_AddDynamicLights` into lightmaps |
 | 2026-07-25 | **Console 2D:** canvas `Con_DrawConsole` with `gfx/conback.lmp` + wad `conchars`; `DrawPics` char/string helpers |
 | 2026-07-25 | **Phase 4 loopback:** `NetLoop` + `SizeBuf`; `Client`/`ClientParse` (print, TE, lightstyle); Write* → datagram flush |
+| 2026-07-25 | **Phase backlog sweep:** Host init/shutdown; id1 file picker; frustum `R_CullBox`; QC `PutClientInServer`; `clc_move` loopback; centerprint overlay; `CdAudio` stub; view bob |
 
 ---
 

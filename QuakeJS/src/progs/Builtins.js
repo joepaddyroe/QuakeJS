@@ -10,6 +10,7 @@ import {
   FL_ONGROUND,
   FL_ITEM,
   MOVETYPE_PUSH,
+  MAX_CLIENTS,
 } from './Edicts.js';
 import { angleVectors } from '../math/QuakeMath.js';
 
@@ -54,6 +55,15 @@ export function createBuiltins(ctx) {
     gi()[OFS_RETURN] = progs.allocString(s);
   };
   const PARM = (n) => OFS_PARM0 + n * 3;
+  /** PF_VarString — concatenate string parms from `start` (uses call argc) */
+  const varString = (start) => {
+    const argc = ctx.exec?.argc ?? 8;
+    let out = '';
+    for (let i = start; i < argc; i++) {
+      out += G_STRING(PARM(i));
+    }
+    return out;
+  };
 
   /** @type {((() => void) | null)[]} */
   const builtins = new Array(96).fill(null);
@@ -406,8 +416,10 @@ export function createBuiltins(ctx) {
   builtins[71] = fixme;
   builtins[72] = () => {}; // cvar_set
   builtins[73] = () => {
-    // centerprint(s)
-    const s = G_STRING(PARM(0));
+    // centerprint(clientent, value…) — PF_centerprint
+    const entnum = G_INT(PARM(0));
+    if (entnum < 1 || entnum > MAX_CLIENTS) return;
+    const s = varString(1);
     ctx.server.writeByte(2, 26); // MSG_ALL, svc_centerprint
     ctx.server.writeString(2, s || '');
   };

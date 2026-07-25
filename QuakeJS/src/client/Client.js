@@ -3,6 +3,7 @@
  */
 
 import { SizeBuf } from '../net/SizeBuf.js';
+import { clc } from '../protocol/Protocol.js';
 import { parseServerMessage } from './ClientParse.js';
 
 export const ca = {
@@ -26,6 +27,10 @@ export class Client {
     this.mtime = 0;
     this._msg = new SizeBuf(8192);
     this._out = new SizeBuf(8192);
+    /** Drop first two moves like CL_SendMove */
+    this.movemessages = 0;
+    /** Last viewangles sent (pitch, yaw, roll) */
+    this.viewangles = new Float32Array(3);
   }
 
   /**
@@ -34,6 +39,7 @@ export class Client {
   connectLocal() {
     this.socket = this.net.connectLocal();
     this.state = ca.connected;
+    this.movemessages = 0;
     this.hooks.print?.('Connected to loopback\n');
   }
 
@@ -60,13 +66,48 @@ export class Client {
   }
 
   /**
+   * CL_SendMove — clc_move over loopback.
+   * @param {{
+   *   forwardmove?: number,
+   *   sidemove?: number,
+   *   upmove?: number,
+   *   buttons?: number,
+   *   impulse?: number,
+   *   angles?: Float32Array|number[],
+   * }} cmd
+   */
+  sendMove(cmd) {
+    if (!this.socket || this.state !== ca.connected) return;
+    const angles = cmd.angles || this.viewangles;
+    this.viewangles[0] = angles[0] || 0;
+    this.viewangles[1] = angles[1] || 0;
+    this.viewangles[2] = angles[2] || 0;
+
+    this._out.clear();
+    this._out.writeByte(clc.move);
+    this._out.writeFloat(this.mtime);
+    this._out.writeAngle(this.viewangles[0]);
+    this._out.writeAngle(this.viewangles[1]);
+    this._out.writeAngle(this.viewangles[2]);
+    this._out.writeShort(cmd.forwardmove | 0);
+    this._out.writeShort(cmd.sidemove | 0);
+    this._out.writeShort(cmd.upmove | 0);
+    this._out.writeByte(cmd.buttons | 0);
+    this._out.writeByte(cmd.impulse | 0);
+
+    this.movemessages += 1;
+    if (this.movemessages <= 2) return;
+    this.net.sendUnreliable(this.socket, this._out);
+  }
+
+  /**
    * Send a clc_stringcmd (console command to server).
    * @param {string} text
    */
   sendStringCmd(text) {
     if (!this.socket || this.state !== ca.connected) return;
     this._out.clear();
-    this._out.writeByte(4); // clc_stringcmd
+    this._out.writeByte(clc.stringcmd);
     this._out.writeString(text.endsWith('\n') ? text : `${text}\n`);
     this.net.sendUnreliable(this.socket, this._out);
   }

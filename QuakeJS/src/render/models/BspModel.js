@@ -3,6 +3,8 @@
  * World submodel 0 only for rendering.
  */
 
+import { cullBox } from '../../math/Frustum.js';
+
 const BSPVERSION = 29;
 const HEADER_LUMPS = 15;
 const LUMP_ENTITIES = 0;
@@ -725,55 +727,115 @@ export class BspModel {
   }
 
   /**
-   * Collect visible face indices via PVS marksurfaces (R_MarkLeaves + leaf marks).
+   * Collect visible face indices (R_RecursiveWorldNode + PVS + R_CullBox).
    * @param {Float32Array|number[]} modelorg  view origin
    * @param {number[]} solidOut
    * @param {number[]} skyOut
    * @param {number[]} turbOut
+   * @param {import('../../math/Frustum.js').FrustumPlane[]|null} [frustum]
    */
-  gatherVisibleFaces(modelorg, solidOut, skyOut, turbOut) {
+  gatherVisibleFaces(modelorg, solidOut, skyOut, turbOut, frustum = null) {
     this._framecount++;
     const frame = this._framecount;
     const vf = this._visframecount;
     solidOut.length = 0;
     skyOut.length = 0;
     turbOut.length = 0;
+    if (this.nodes.length) {
+      this._recursiveWorldNode(0, modelorg, frame, vf, frustum, solidOut, skyOut, turbOut);
+    }
+  }
 
-    // Mark surfaces belonging to PVS leaves
-    for (let i = 0; i < this.numVisLeafs; i++) {
-      const leaf = this.leafs[i + 1];
-      if (leaf.visframe !== vf) continue;
-      if (leaf.contents === -2) continue; // CONTENTS_SOLID
+  /**
+   * @param {number} nodeIndex
+   * @param {Float32Array|number[]} modelorg
+   * @param {number} frame
+   * @param {number} vf
+   * @param {import('../../math/Frustum.js').FrustumPlane[]|null} frustum
+   * @param {number[]} solidOut
+   * @param {number[]} skyOut
+   * @param {number[]} turbOut
+   */
+  _recursiveWorldNode(nodeIndex, modelorg, frame, vf, frustum, solidOut, skyOut, turbOut) {
+    if (nodeIndex < 0) {
+      const leaf = this.leafs[-1 - nodeIndex];
+      if (!leaf || leaf.visframe !== vf) return;
+      if (leaf.contents === -2) return; // CONTENTS_SOLID
+      if (frustum && cullBox(leaf.mins, leaf.maxs, frustum)) return;
       for (let j = 0; j < leaf.nummarksurfaces; j++) {
         const fi = this.marksurfaces[leaf.firstmarksurface + j];
-        this.faces[fi].visframe = frame;
+        this._emitFace(fi, modelorg, frame, solidOut, skyOut, turbOut);
       }
+      return;
     }
 
-    const world = this.submodels[0];
-    if (!world) return;
-    const first = world.firstface;
-    const last = first + world.numfaces;
+    const node = this.nodes[nodeIndex];
+    if (!node) return;
+    if (node.visframe !== vf) return;
+    if (frustum && cullBox(node.mins, node.maxs, frustum)) return;
 
-    for (let fi = first; fi < last; fi++) {
-      const face = this.faces[fi];
-      if (face.visframe !== frame) continue;
-      if (face.kind === 'skip' || face.numEdges < 3) continue;
+    const plane = this.planes[node.planenum];
+    const dot =
+      modelorg[0] * plane.normal[0] +
+      modelorg[1] * plane.normal[1] +
+      modelorg[2] * plane.normal[2] -
+      plane.dist;
+    const side = dot >= 0 ? 0 : 1;
 
-      if (face.kind === 'solid' || face.kind === 'sky') {
-        const plane = this.planes[face.planenum];
-        const dot =
-          modelorg[0] * plane.normal[0] +
-          modelorg[1] * plane.normal[1] +
-          modelorg[2] * plane.normal[2] -
-          plane.dist;
-        if (((dot < 0) ? 1 : 0) ^ (face.planeBack ? 1 : 0)) continue;
-      }
+    this._recursiveWorldNode(
+      node.children[side],
+      modelorg,
+      frame,
+      vf,
+      frustum,
+      solidOut,
+      skyOut,
+      turbOut,
+    );
 
-      if (face.kind === 'solid') solidOut.push(fi);
-      else if (face.kind === 'sky') skyOut.push(fi);
-      else if (face.kind === 'turb') turbOut.push(fi);
+    for (let i = 0; i < node.numfaces; i++) {
+      this._emitFace(node.firstface + i, modelorg, frame, solidOut, skyOut, turbOut);
     }
+
+    this._recursiveWorldNode(
+      node.children[side ^ 1],
+      modelorg,
+      frame,
+      vf,
+      frustum,
+      solidOut,
+      skyOut,
+      turbOut,
+    );
+  }
+
+  /**
+   * @param {number} fi
+   * @param {Float32Array|number[]} modelorg
+   * @param {number} frame
+   * @param {number[]} solidOut
+   * @param {number[]} skyOut
+   * @param {number[]} turbOut
+   */
+  _emitFace(fi, modelorg, frame, solidOut, skyOut, turbOut) {
+    const face = this.faces[fi];
+    if (!face || face.visframe === frame) return;
+    if (face.kind === 'skip' || face.numEdges < 3) return;
+    face.visframe = frame;
+
+    if (face.kind === 'solid' || face.kind === 'sky') {
+      const plane = this.planes[face.planenum];
+      const dot =
+        modelorg[0] * plane.normal[0] +
+        modelorg[1] * plane.normal[1] +
+        modelorg[2] * plane.normal[2] -
+        plane.dist;
+      if (((dot < 0) ? 1 : 0) ^ (face.planeBack ? 1 : 0)) return;
+    }
+
+    if (face.kind === 'solid') solidOut.push(fi);
+    else if (face.kind === 'sky') skyOut.push(fi);
+    else if (face.kind === 'turb') turbOut.push(fi);
   }
 
   /**

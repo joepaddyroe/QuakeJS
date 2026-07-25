@@ -12,6 +12,7 @@ import { Console } from '../ui/Console.js';
 import { registerHostCommands } from '../ui/HostCmds.js';
 import { NetLoop } from '../net/NetLoop.js';
 import { Client } from '../client/Client.js';
+import { CdAudio } from '../audio/CdAudio.js';
 
 export class Host {
   /**
@@ -27,6 +28,7 @@ export class Host {
    * @param {import('../ui/Menu.js').Menu} [deps.menu]
    * @param {import('../ui/ScreenOverlay.js').ScreenOverlay} [deps.overlay]
    * @param {import('../ui/Console.js').Console} [deps.console]
+   * @param {import('../audio/CdAudio.js').CdAudio} [deps.cd]
    */
   constructor({
     canvas,
@@ -40,6 +42,7 @@ export class Host {
     menu = null,
     overlay = null,
     console: consoleUi = null,
+    cd = null,
   }) {
     this._canvas = canvas;
     this._hud = hud;
@@ -51,12 +54,15 @@ export class Host {
     this._sound = sound;
     this._menu = menu;
     this._overlay = overlay;
+    this._cd = cd || new CdAudio();
     this._fpsAccum = 0;
     this._fpsFrames = 0;
     this._fps = 0;
     this._noclipWasDown = false;
     this._attackWasDown = false;
     this._mapLoading = false;
+    this._initialized = false;
+    this._shuttingDown = false;
 
     this.cmd = new Cmd();
     this.cvars = new CvarStore();
@@ -74,10 +80,24 @@ export class Host {
             (msg) => this.con.print(msg),
           );
         },
-        centerprint: (t) => this.con.print(`${t}\n`),
+        centerprint: (t) => this._overlay?.centerPrint(t) ?? this.con.print(`${t}\n`),
         lightstyle: (i, map) => this._renderer.lightStyles.set(i, map),
         tempEntity: (te, pos, extra) =>
           this._renderer.handleTempEntity(te, pos, extra),
+        cdtrack: (track, loopTrack) => {
+          const t = track | 0;
+          if (t <= 0) this._cd.stop();
+          else this._cd.play(t, (loopTrack | 0) === t);
+        },
+        setangle: (pitch, yaw) => {
+          this._pointer.pitch = pitch;
+          this._pointer.yaw = yaw;
+          const player = this._renderer.player;
+          if (player) {
+            player.pitch = pitch;
+            player.yaw = yaw;
+          }
+        },
       },
     });
 
@@ -129,9 +149,38 @@ export class Host {
       this._canvas.addEventListener('pointerdown', unlock, { once: false });
       window.addEventListener('keydown', unlock, { once: false });
     }
+  }
 
-    this.con.print('Ready. Esc = menu, ` = console.\n');
+  /**
+   * Host_Init stages (filesystem / vid already wired by main.js).
+   */
+  init() {
+    if (this._initialized) return;
+    this.con.print('Host_Init: COM / filesystem ready\n');
+    this.con.print('Host_Init: Cmd / Cvar / Console\n');
+    this.con.print('Host_Init: Menu / Sbar / Overlay\n');
+    this.con.print('Host_Init: NET / SV / CL (loopback)\n');
+    this.con.print('Host_Init: VID / Draw / R (WebGPU)\n');
+    this.con.print('Host_Init: S / IN\n');
+    this._cd.init();
+    this.con.print('Host_Init: CDAudio stub\n');
     this._connectLoopback();
+    this._initialized = true;
+    this.con.print('========QuakeJS Initialized=========\n');
+    this.con.print('Ready. Esc = menu, ` = console.\n');
+  }
+
+  /**
+   * Host_Shutdown
+   */
+  shutdown() {
+    if (this._shuttingDown) return;
+    this._shuttingDown = true;
+    this.con.print('Host_Shutdown\n');
+    this.client.disconnect();
+    this._cd.shutdown();
+    window.removeEventListener('keydown', this._onKeyDown, true);
+    this._initialized = false;
   }
 
   /**
@@ -145,7 +194,15 @@ export class Host {
     this.client.net = this.net;
     this.client.connectLocal();
     const sock = this.net.checkNewConnections();
-    if (sock) server.attachNet(this.net, sock);
+    if (sock) {
+      const pose = server.attachNet(this.net, sock);
+      const player = this._renderer.player;
+      if (pose && player) {
+        player.placeAtSpawn(pose.origin, [pose.pitch, pose.yaw, 0]);
+        this._pointer.pitch = pose.pitch;
+        this._pointer.yaw = pose.yaw;
+      }
+    }
     this.client.readPackets();
   }
 
@@ -279,7 +336,37 @@ export class Host {
       const attackPressed = attack && !this._attackWasDown;
       this._attackWasDown = attack;
 
+      // CL_SendMove → SV_ReadClientMessage (buttons/angles via loopback)
+      let forwardmove = 0;
+      let sidemove = 0;
+      let upmove = 0;
+      if (!intermission) {
+        if (kb.isDown('KeyW') || kb.isDown('ArrowUp')) forwardmove += 400;
+        if (kb.isDown('KeyS') || kb.isDown('ArrowDown')) forwardmove -= 400;
+        if (kb.isDown('KeyA') || kb.isDown('ArrowLeft')) sidemove -= 350;
+        if (kb.isDown('KeyD') || kb.isDown('ArrowRight')) sidemove += 350;
+        if (jump) upmove += 200;
+        if (
+          kb.isDown('ControlLeft') ||
+          kb.isDown('ControlRight') ||
+          kb.isDown('KeyC')
+        ) {
+          upmove -= 200;
+        }
+      }
+      const buttons = (attack ? 1 : 0) | (jump ? 2 : 0);
+      this.client.sendMove({
+        forwardmove,
+        sidemove,
+        upmove,
+        buttons,
+        impulse: 0,
+        angles: [this._pointer.pitch, this._pointer.yaw, 0],
+      });
+      if (server) server.readClientMessages();
+
       if (server) {
+        const cmdButtons = server.lastCmd.buttons;
         server.syncClientEdict(1, {
           origin: player.origin,
           velocity: player.velocity,
@@ -290,7 +377,10 @@ export class Host {
           onground: player.onground,
           groundEntity: player.groundEntity,
         });
-        server.runClientThink(1, { attack, jump });
+        server.runClientThink(1, {
+          attack: !!(cmdButtons & 1) || attack,
+          jump: !!(cmdButtons & 2) || jump,
+        });
         server.applyClientEdict(1, player);
       }
 
@@ -372,6 +462,9 @@ export class Host {
       server.sendClientMessages();
       this.client.readPackets();
     }
+
+    this._cd.update();
+    this._overlay?.frame(dt);
 
     this._renderer.frame(width, height, dt);
 

@@ -68,6 +68,38 @@ export class FileSystem {
   }
 
   /**
+   * Load PAK buffers from user-selected File objects (file picker fallback).
+   * @param {File[]} files
+   */
+  async initFromFiles(files) {
+    this.baseUrl = 'file-picker';
+    this._packs = [];
+    /** @type {Map<string, ArrayBuffer>} */
+    const byName = new Map();
+    for (const f of files) {
+      const key = f.name.replace(/\\/g, '/').toLowerCase();
+      const base = key.includes('/') ? key.slice(key.lastIndexOf('/') + 1) : key;
+      byName.set(base, await f.arrayBuffer());
+    }
+    /** @type {PakFile[]} */
+    const loaded = [];
+    for (const name of ['pak1.pak', 'pak0.pak']) {
+      const buf = byName.get(name);
+      if (!buf) continue;
+      const pak = new PakFile(buf, name);
+      loaded.push(pak);
+      console.info(`[fs] Added pack ${name} (${pak.fileCount} files) [picker]`);
+    }
+    if (loaded.length === 0 || !byName.has('pak0.pak')) {
+      throw new Error('Need at least pak0.pak (select pak0.pak and optionally pak1.pak)');
+    }
+    this._packs = loaded;
+    if (!this.has('gfx/palette.lmp')) {
+      throw new Error('gfx/palette.lmp missing from PAK');
+    }
+  }
+
+  /**
    * @param {string} name
    * @returns {boolean}
    */

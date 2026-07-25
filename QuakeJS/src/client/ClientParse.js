@@ -13,6 +13,8 @@ import { svc, TE } from '../protocol/Protocol.js';
  *   lightstyle?: (index: number, map: string) => void,
  *   tempEntity?: (te: number, pos: Float32Array, extra?: object) => void,
  *   time?: (t: number) => void,
+ *   cdtrack?: (track: number, loopTrack: number) => void,
+ *   setangle?: (pitch: number, yaw: number, roll: number) => void,
  * }} ClientParseHooks
  */
 
@@ -75,9 +77,10 @@ export function parseServerMessage(msg, hooks) {
         break;
       }
       case svc.setangle: {
-        msg.readAngle();
-        msg.readAngle();
-        msg.readAngle();
+        const pitch = msg.readAngle();
+        const yaw = msg.readAngle();
+        const roll = msg.readAngle();
+        hooks.setangle?.(pitch, yaw, roll);
         break;
       }
       case svc.signonnum:
@@ -89,10 +92,12 @@ export function parseServerMessage(msg, hooks) {
         // skip string if present for finale
         if (cmd === svc.finale || cmd === svc.cutscene) msg.readString();
         break;
-      case svc.cdtrack:
-        msg.readByte();
-        msg.readByte();
+      case svc.cdtrack: {
+        const track = msg.readByte();
+        const loopTrack = msg.readByte();
+        hooks.cdtrack?.(track, loopTrack);
         break;
+      }
       default:
         // Unknown — stop to avoid desync
         hooks.print?.(`CL_Parse: unknown svc ${cmd}\n`);

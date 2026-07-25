@@ -21,6 +21,10 @@ export class ScreenOverlay {
     this._wadPics = new Map();
     this._canvas.width = 320;
     this._canvas.height = 200;
+    /** @type {string} */
+    this._centerText = '';
+    /** Seconds remaining to show centerprint */
+    this._centerHold = 0;
   }
 
   /** @returns {boolean} */
@@ -81,7 +85,7 @@ export class ScreenOverlay {
 
   hideLoading() {
     this._loading = false;
-    if (!this._intermissionActive) {
+    if (!this._intermissionActive && this._centerHold <= 0) {
       this._canvas.style.display = 'none';
     }
   }
@@ -154,6 +158,58 @@ export class ScreenOverlay {
   _intermissionActive = false;
 
   /**
+   * SCR_CenterPrint — hold message in the middle of the screen.
+   * @param {string} text
+   * @param {number} [hold=3]
+   */
+  centerPrint(text, hold = 3) {
+    this._centerText = (text || '').replace(/\r/g, '');
+    this._centerHold = Math.max(0.5, hold);
+    if (this._centerText && !this._loading) {
+      this._canvas.style.display = 'block';
+      this._paintCenter();
+    }
+  }
+
+  /**
+   * Advance centerprint timer; redraw when visible.
+   * @param {number} dt
+   */
+  frame(dt) {
+    if (this._loading || this._intermissionActive) return;
+    if (this._centerHold <= 0) return;
+    this._centerHold -= dt;
+    if (this._centerHold <= 0) {
+      this._centerText = '';
+      this._centerHold = 0;
+      this._canvas.style.display = 'none';
+      if (this._ctx) {
+        this._ctx.clearRect(0, 0, 320, 200);
+      }
+      return;
+    }
+    this._paintCenter();
+  }
+
+  _paintCenter() {
+    if (!this._ctx || !this._centerText) return;
+    this._canvas.style.display = 'block';
+    const ctx = this._ctx;
+    ctx.clearRect(0, 0, 320, 200);
+    const lines = this._centerText.split('\n');
+    ctx.fillStyle = '#f0e6d8';
+    ctx.font = '8px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const startY = 100 - ((lines.length - 1) * 10) / 2;
+    for (let i = 0; i < lines.length; i++) {
+      ctx.fillText(lines[i], 160, startY + i * 10);
+    }
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  /**
    * Sbar_IntermissionOverlay / Finale.
    * @param {{
    *   active: boolean,
@@ -170,7 +226,11 @@ export class ScreenOverlay {
 
     if (!info?.active) {
       this._intermissionActive = false;
-      this._canvas.style.display = 'none';
+      if (this._centerHold <= 0) {
+        this._canvas.style.display = 'none';
+      } else {
+        this._paintCenter();
+      }
       return;
     }
 
