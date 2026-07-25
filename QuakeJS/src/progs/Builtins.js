@@ -318,7 +318,14 @@ export function createBuiltins(ctx) {
     }
     RETURN_INT(0);
   };
-  builtins[48] = () => {}; // particle
+  builtins[48] = () => {
+    // particle(org, dir, color, count)
+    const org = G_VECTOR(PARM(0));
+    const dir = G_VECTOR(PARM(1));
+    const color = G_FLOAT(PARM(2)) | 0;
+    const count = G_FLOAT(PARM(3)) | 0;
+    ctx.server.particles?.runEffect(org, dir, color, count);
+  };
   builtins[49] = () => {
     // changeyaw
     const self = G_INT(ofs.self);
@@ -354,7 +361,28 @@ export function createBuiltins(ctx) {
     }
     RETURN_VECTOR([pitch, yaw, 0]);
   };
-  for (let i = 52; i <= 66; i++) builtins[i] = () => {};
+  // WriteByte / WriteChar / WriteShort / WriteLong / WriteAngle / WriteCoord / WriteString / WriteEntity
+  const writeByte = () => {
+    ctx.server.writeMsg(G_FLOAT(PARM(0)), 'b', G_FLOAT(PARM(1)) | 0);
+  };
+  builtins[52] = writeByte;
+  builtins[53] = writeByte; // char
+  builtins[54] = writeByte; // short — low byte enough for TE ids
+  builtins[55] = writeByte; // long
+  builtins[56] = () => {
+    // WriteCoord
+    ctx.server.writeMsg(G_FLOAT(PARM(0)), 'c', G_FLOAT(PARM(1)));
+  };
+  builtins[57] = () => {
+    // WriteAngle
+    ctx.server.writeMsg(G_FLOAT(PARM(0)), 'b', ((G_FLOAT(PARM(1)) * 256) / 360) | 0);
+  };
+  builtins[58] = () => {}; // WriteString
+  builtins[59] = () => {
+    ctx.server.writeMsg(G_FLOAT(PARM(0)), 'b', G_INT(PARM(1)) & 0xff);
+    ctx.server.writeMsg(G_FLOAT(PARM(0)), 'b', (G_INT(PARM(1)) >> 8) & 0xff);
+  }; // WriteEntity as short
+  for (let i = 60; i <= 66; i++) builtins[i] = () => {};
   builtins[67] = () => {
     RETURN_FLOAT(0);
   }; // movetogoal

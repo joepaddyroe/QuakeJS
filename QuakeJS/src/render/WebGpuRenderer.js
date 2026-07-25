@@ -6,6 +6,8 @@ import { DemoRoomRenderer } from './DemoRoomRenderer.js';
 import { FlyCamera } from './FlyCamera.js';
 import { WorldRenderer } from './WorldRenderer.js';
 import { AliasRenderer } from './AliasRenderer.js';
+import { SpriteRenderer } from './SpriteRenderer.js';
+import { ParticleSystem } from './ParticleSystem.js';
 import { BspModel } from './models/BspModel.js';
 import { PlayerMove } from '../server/PlayerMove.js';
 import { Server } from '../server/Server.js';
@@ -19,6 +21,8 @@ export class WebGpuRenderer {
     this._demo = new DemoRoomRenderer(gpu.device, gpu.presentationFormat);
     this._worldRend = new WorldRenderer(gpu.device, gpu.presentationFormat);
     this._aliasRend = new AliasRenderer(gpu.device, gpu.presentationFormat);
+    this._spriteRend = new SpriteRenderer(gpu.device, gpu.presentationFormat);
+    this._particles = new ParticleSystem(gpu.device, gpu.presentationFormat);
     this._demoCamera = new FlyCamera();
     /** @type {PlayerMove|null} */
     this.player = null;
@@ -34,8 +38,14 @@ export class WebGpuRenderer {
     this.visibleFaces = 0;
     this.viewLeaf = 0;
     this.aliasCount = 0;
+    this.spriteCount = 0;
     this.viewWeapon = '';
     this._time = 0;
+  }
+
+  /** @returns {ParticleSystem} */
+  get particles() {
+    return this._particles;
   }
 
   /** @returns {FlyCamera|PlayerMove} */
@@ -47,6 +57,8 @@ export class WebGpuRenderer {
     this._demo.init();
     this._worldRend.initPipeline();
     this._aliasRend.initPipeline();
+    this._spriteRend.initPipeline();
+    this._particles.initPipeline();
   }
 
   /**
@@ -56,12 +68,20 @@ export class WebGpuRenderer {
    */
   loadMap(fs, mapPath = 'maps/start.bsp', sound = null) {
     if (sound) sound.stopAll();
+    this._particles.clear();
+    this._spriteRend.clear();
     const data = fs.load(mapPath);
     const palette = fs.loadPalette();
+    this._particles.setPalette(palette);
     const bsp = new BspModel(data, mapPath);
     this._worldRend.buildFromBsp(bsp, palette);
     this._aliasRend.setFilesystem(fs, palette);
+    this._spriteRend.setFilesystem(fs, palette);
     this.server = new Server(bsp, fs, mapPath, sound);
+    this.server.particles = this._particles;
+    this.server.onTempEntity = (te, pos) => {
+      if (te === 3 || te === 4) this._spriteRend.spawnExplosion(pos);
+    };
     this.collision = this.server.world;
     this.player = new PlayerMove(this.collision);
     this.mode = 'world';
@@ -95,12 +115,15 @@ export class WebGpuRenderer {
     const colorView = context.getCurrentTexture().createView();
     const encoder = device.createCommandEncoder();
     if (this.mode === 'world' && this.player) {
+      this._particles.update(dt);
       const brushes = this.server ? this.server.getBrushDrawList() : [];
       const aliases = this.server ? this.server.getAliasDrawList() : [];
+      const sprites = this.server ? this.server.getSpriteDrawList() : [];
+      const cam = this.player.lookAtArgs();
       this._worldRend.draw(
         encoder,
         colorView,
-        this.player.lookAtArgs(),
+        cam,
         width,
         height,
         this._time,
@@ -111,10 +134,28 @@ export class WebGpuRenderer {
           encoder,
           colorView,
           this._worldRend._depthView,
-          this.player.lookAtArgs(),
+          cam,
           width,
           height,
           aliases,
+        );
+        this._spriteRend.draw(
+          encoder,
+          colorView,
+          this._worldRend._depthView,
+          cam,
+          width,
+          height,
+          sprites,
+          this._time,
+        );
+        this._particles.draw(
+          encoder,
+          colorView,
+          this._worldRend._depthView,
+          cam,
+          width,
+          height,
         );
         const gun = this.server ? this.server.getViewWeapon(this.player) : null;
         this.viewWeapon = gun ? gun.model : '';
@@ -122,7 +163,7 @@ export class WebGpuRenderer {
           encoder,
           colorView,
           this._worldRend._depthView,
-          this.player.lookAtArgs(),
+          cam,
           width,
           height,
           gun,
@@ -131,6 +172,7 @@ export class WebGpuRenderer {
       this.visibleFaces = this._worldRend.visibleFaces;
       this.viewLeaf = this._worldRend.viewLeaf;
       this.aliasCount = aliases.length;
+      this.spriteCount = sprites.length + this._spriteRend._explosions.length;
     } else {
       this._demo.draw(encoder, colorView, this._demoCamera.lookAtArgs(), width, height);
     }
@@ -141,5 +183,7 @@ export class WebGpuRenderer {
     this._demo.destroy();
     this._worldRend.destroy();
     this._aliasRend.destroy();
+    this._spriteRend.destroy();
+    this._particles.destroy();
   }
 }

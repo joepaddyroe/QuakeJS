@@ -78,6 +78,16 @@ export class Server {
     this.bsp = bsp;
     this.fs = fs;
     this.sound = sound;
+    /** @type {import('../render/ParticleSystem.js').ParticleSystem|null} */
+    this.particles = null;
+    /**
+     * Client temp-entity hook (TE_EXPLOSION sprites, etc.).
+     * @type {((te: number, pos: Float32Array) => void)|null}
+     */
+    this.onTempEntity = null;
+    /** Local unreliable datagram for Write* → svc_temp_entity (no loopback yet). */
+    /** @type {{ t: 'b'|'c', v: number }[]} */
+    this._datagram = [];
     this.mapName = mapName.replace(/^maps\//, '').replace(/\.bsp$/i, '');
     this.world = new World(bsp);
     this.progs = new Progs(fs.load('progs.dat'));
@@ -297,6 +307,125 @@ export class Server {
   }
 
   /**
+   * PF_Write* — append to local datagram (MSG_BROADCAST / MSG_ALL).
+   * @param {number} dest
+   * @param {'b'|'c'} kind
+   * @param {number} value
+   */
+  writeMsg(dest, kind, value) {
+    // 0=BROADCAST, 2=ALL — ignore ONE/INIT until loopback
+    if (dest !== 0 && dest !== 2) return;
+    this._datagram.push({ t: kind, v: value });
+    this._parseDatagram();
+  }
+
+  /**
+   * Opportunistically parse svc_temp_entity from the write buffer.
+   */
+  _parseDatagram() {
+    const SVC_TEMPENTITY = 23;
+    const TE_SPIKE = 0;
+    const TE_SUPERSPIKE = 1;
+    const TE_GUNSHOT = 2;
+    const TE_EXPLOSION = 3;
+    const TE_TAREXPLOSION = 4;
+    const TE_TELEPORT = 11;
+    const TE_EXPLOSION2 = 12;
+
+    const takeCoords = (n) => {
+      const pos = new Float32Array(3);
+      for (let i = 0; i < n; i++) pos[i] = this._datagram.shift().v;
+      return pos;
+    };
+
+    while (this._datagram.length >= 2) {
+      if (this._datagram[0].t !== 'b') {
+        this._datagram.shift();
+        continue;
+      }
+      if (this._datagram[0].v !== SVC_TEMPENTITY) {
+        this._datagram.shift();
+        continue;
+      }
+      if (this._datagram[1].t !== 'b') {
+        this._datagram.shift();
+        continue;
+      }
+      const te = this._datagram[1].v;
+      // Peek past svc + te
+      const rest = this._datagram.slice(2);
+
+      if (
+        te === TE_GUNSHOT ||
+        te === TE_SPIKE ||
+        te === TE_SUPERSPIKE ||
+        te === TE_EXPLOSION ||
+        te === TE_TAREXPLOSION ||
+        te === TE_TELEPORT
+      ) {
+        if (rest.length < 3 || rest[0].t !== 'c' || rest[1].t !== 'c' || rest[2].t !== 'c') {
+          return; // wait for coords
+        }
+        this._datagram.shift();
+        this._datagram.shift();
+        const pos = takeCoords(3);
+        this._dispatchTempEntity(te, pos);
+        continue;
+      }
+      if (te === TE_EXPLOSION2) {
+        // pos + colorStart + colorLength bytes
+        if (
+          rest.length < 5 ||
+          rest[0].t !== 'c' ||
+          rest[1].t !== 'c' ||
+          rest[2].t !== 'c' ||
+          rest[3].t !== 'b' ||
+          rest[4].t !== 'b'
+        ) {
+          return;
+        }
+        this._datagram.shift();
+        this._datagram.shift();
+        const pos = takeCoords(3);
+        this._datagram.shift();
+        this._datagram.shift();
+        this._dispatchTempEntity(te, pos);
+        continue;
+      }
+      // Unknown / beams — drop svc+te and hope
+      this._datagram.shift();
+      this._datagram.shift();
+    }
+  }
+
+  /**
+   * @param {number} te
+   * @param {Float32Array} pos
+   */
+  _dispatchTempEntity(te, pos) {
+    const TE_GUNSHOT = 2;
+    const TE_EXPLOSION = 3;
+    const TE_TAREXPLOSION = 4;
+    const TE_SPIKE = 0;
+    const TE_SUPERSPIKE = 1;
+
+    if (te === TE_EXPLOSION || te === TE_TAREXPLOSION) {
+      this.particles?.explosion(pos);
+      this.onTempEntity?.(te, pos);
+      if (this.sound) {
+        this.precacheSound('weapons/r_exp3.wav');
+        this.sound.startSound(-1, 0, 'weapons/r_exp3.wav', pos, 255, 1);
+      }
+      return;
+    }
+    if (te === TE_GUNSHOT || te === TE_SPIKE || te === TE_SUPERSPIKE) {
+      this.particles?.runEffect(pos, [0, 0, 0], 0, te === TE_GUNSHOT ? 20 : 10);
+      return;
+    }
+    this.onTempEntity?.(te, pos);
+  }
+
+  /**
    * @param {string} name
    * @returns {{ mins: Float32Array, maxs: Float32Array } | null}
    */
@@ -308,7 +437,13 @@ export class Server {
       if (!sm) return null;
       return { mins: sm.mins, maxs: sm.maxs };
     }
-    // Alias/sprite — stub empty
+    // Alias / sprite — coarse box until per-model cache (matches Mod_LoadSprite mins/maxs style)
+    if (name.endsWith('.spr')) {
+      return {
+        mins: new Float32Array([-16, -16, -16]),
+        maxs: new Float32Array([16, 16, 16]),
+      };
+    }
     return {
       mins: new Float32Array([-16, -16, -16]),
       maxs: new Float32Array([16, 16, 16]),
@@ -1006,6 +1141,35 @@ export class Server {
   }
 
   /**
+   * Sprite entities (light_globe, bubbles, explosions, …).
+   * @returns {{ model: string, origin: Float32Array, angles: Float32Array, frame: number }[]}
+   */
+  getSpriteDrawList() {
+    const edicts = this.edicts;
+    const f = this.progs.f;
+    const progs = this.progs;
+    /** @type {{ model: string, origin: Float32Array, angles: Float32Array, frame: number }[]} */
+    const out = [];
+    for (let e = 1; e < edicts.numEdicts; e++) {
+      if (edicts.free[e]) continue;
+      if (e === 1) continue;
+      if ((edicts.getFloat(e, f.flags) | 0) & FL_CLIENT) continue;
+      const model = progs.stringAt(edicts.getInt(e, f.model));
+      if (!model || !model.endsWith('.spr')) continue;
+      if (!(edicts.getFloat(e, f.modelindex) > 0)) continue;
+      const o = edicts.getVec(e, f.origin);
+      const ang = edicts.getVec(e, f.angles);
+      out.push({
+        model,
+        origin: new Float32Array([o[0], o[1], o[2]]),
+        angles: new Float32Array([ang[0] || 0, ang[1] || 0, ang[2] || 0]),
+        frame: edicts.getFloat(e, f.frame) | 0,
+      });
+    }
+    return out;
+  }
+
+  /**
    * Brush models to draw / clip (doors/plats/buttons) — *N submodels with SOLID_BSP.
    * @returns {{ submodel: number, origin: Float32Array, edict: number }[]}
    */
@@ -1196,7 +1360,7 @@ export class Server {
       eye[2] + forward[2] * 2048,
     ]);
     const tr = this.traceLine(eye, end);
-    if (!tr.ent || tr.fraction >= 1) return;
+    if (tr.fraction >= 1) return;
 
     const edicts = this.edicts;
     const progs = this.progs;
@@ -1205,9 +1369,20 @@ export class Server {
     const thPainOfs = progs.fieldByName.get('th_pain')?.ofs;
     const thDieOfs = progs.fieldByName.get('th_die')?.ofs;
 
-    if (takedamageOfs == null || !(edicts.getFloat(tr.ent, takedamageOfs) > 0)) {
-      return;
+    const canDamage =
+      tr.ent &&
+      takedamageOfs != null &&
+      edicts.getFloat(tr.ent, takedamageOfs) > 0;
+
+    // Gunshot sparks / blood (R_RunParticleEffect)
+    if (this.particles) {
+      const n = tr.plane?.normal || [0, 0, 1];
+      const color = canDamage ? 225 : 0;
+      const count = canDamage ? 15 : 20;
+      this.particles.runEffect(tr.endpos, n, color, count);
     }
+
+    if (!canDamage) return;
 
     let health = edicts.getFloat(tr.ent, progs.f.health);
     health -= damage;

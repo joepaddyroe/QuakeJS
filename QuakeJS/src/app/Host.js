@@ -397,7 +397,7 @@ export class Host {
         `FPS ${this._fps.toFixed(0)}   ${width}×${height}\n` +
         `org ${player.origin[0].toFixed(0)} ${player.origin[1].toFixed(0)} ${player.origin[2].toFixed(0)}  [${mode}]\n` +
         `eye ${eye[0].toFixed(0)} ${eye[1].toFixed(0)} ${eye[2].toFixed(0)}\n` +
-        `vis ${this._renderer.visibleFaces}  leaf ${this._renderer.viewLeaf}  mdl ${this._renderer.aliasCount}\n` +
+        `vis ${this._renderer.visibleFaces}  leaf ${this._renderer.viewLeaf}  mdl ${this._renderer.aliasCount}  spr ${this._renderer.spriteCount}\n` +
         (this._renderer.viewWeapon
           ? `gun ${this._renderer.viewWeapon}\n`
           : '') +

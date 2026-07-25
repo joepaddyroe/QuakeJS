@@ -53,7 +53,7 @@ If you are picking up this project with no chat history:
 5. Respect **§2–3** (SOLID + layers) before editing.
 6. After completing work, update **§12**, **§7**, and **§15 Changelog** in this file. Leave `README.md` alone unless the change is drastic for end users.
 
-**Current maturity (2026-07-25):** id1 PAK + BSP world + hull walk + stair smooth + QuakeC + brush draw/clip + changelevel + alias MDL + FP shotgun (fire anim) + status bar + Web Audio SFX + console/cvars + main menu + loading/intermission overlays. No loopback protocol yet.
+**Current maturity (2026-07-25):** id1 PAK + BSP world + hull walk + stair smooth + QuakeC + brush draw/clip + changelevel + alias MDL + sprites + FP shotgun (fire anim) + particles + status bar + Web Audio SFX + console/cvars + main menu + loading/intermission overlays. No loopback protocol yet.
 
 ### Remaining tasks (priority order)
 
@@ -63,12 +63,12 @@ Use **§13** for file-level detail. Summary:
 |----------|------|--------|
 | **P0** | Canvas + WebGPU shell, `Host` / frame loop | Done |
 | **P0** | Filesystem: PAK + `id1` search paths | Done |
-| **P1** | BSP / alias / sprite model load | Partial — BSP brush only |
+| **P1** | BSP / alias / sprite model load | Done — BSP + MDL + SPR |
 | **P1** | WebGPU world draw (brush + lightmaps) | Done (+ PVS/sky/turb) |
 | **P2** | Loopback client ↔ server + protocol | Not started |
 | **P2** | QuakeC VM (`pr_exec` / edicts / builtins) | Partial — spawn/think/touch/changelevel |
 | **P2** | Physics / movement (`sv_phys`, `world`) | Partial — walk + brush clip + PUSH |
-| **P3** | View weapon, particles, status bar, menu | Partial — shotgun fire anim + sbar + console + menu |
+| **P3** | View weapon, particles, status bar, menu | Partial — shotgun + particles + sprites + sbar + console + menu |
 | **P3** | Sound (DMA-style mix → Web Audio) | Partial — SFX + spatialize |
 | **P4** | Saves, demos, console polish | Not started |
 | **P5** | QuakeWorld / multiplayer | Not started |
@@ -282,7 +282,7 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started
 ### Phase 2 — Models
 - [x] Brush BSP load (verts, edges, surfaces, textures, lighting, texinfo, faces, entities, submodels)
 - [x] Alias MDL load
-- [ ] Sprite SPR load
+- [x] Sprite SPR load
 - [x] Texture upload path (8-bit → RGBA GPU; lightmap atlas 128×128 pages)
 
 ### Phase 3 — Render (WebGPU)
@@ -290,7 +290,8 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started
 - [x] PVS culling (`Mod_PointInLeaf` / `Mod_LeafPVS` / marksurfaces)
 - [x] Turbulent water / sky (`EmitWaterPolys` / `EmitSkyPolys` subset)
 - [x] Alias models (items/monsters) + first-person view weapon (`v_shot.mdl`)
-- [ ] Sprites + particles
+- [x] Particles (gunshot / blood via `R_RunParticleEffect` subset)
+- [x] Sprites (SPR load + billboard draw; QW-style explosion temps)
 - [ ] Dynamic lights / lightstyles
 - [ ] 2D draw (`Draw_Pic`, console background)
 - [ ] Frustum cull on BSP nodes (`R_CullBox`)
@@ -347,7 +348,7 @@ Last audited: **2026-07-25** against `Quake-master/WinQuake`. Re-audit after maj
 Host / frame         ████░░░░░░  ~40%   rAF Host.frame; server physics + trigger touch
 Filesystem (PAK)     ████████░░  ~80%   pak0+pak1; no loose files / -path
 Models (BSP/MDL/SPR) ██████░░░░  ~65%   BSP+alias MDL; no SPR
-WebGPU render        ███████░░░  ~78%   world+brush+alias+view weapon; no frustum
+WebGPU render        ████████░░  ~85%   world+brush+alias+sprites+view weapon+particles; no frustum
 Server / world       ███████░░░  ~65%   hull walk + pushers + brush clip
 QuakeC VM            ██████░░░░  ~55%   exec+edicts+builtins; doors/triggers on start
 Client / protocol    ░░░░░░░░░░   0%   view weapon pose via local edict stub
@@ -414,7 +415,7 @@ Use this when choosing what to port next. Goal: **playable Quake 1 single-player
 | P3 | **Alias + view weapon** | Partial — FP shotgun + fire frames | `AliasRenderer.js`, `Server.playerAttack` · `gl_mesh.c`, `view.c` |
 | P3 | **Status bar + menu + console** | Partial — sbar + console + menu + overlays | `ui/*` · `sbar.c`, `console.c`, `menu.c`, `screen.c` |
 | P3 | **Sound** | Partial — SFX + spatialize | `audio/SoundSystem.js` · `snd_dma.c` |
-| P4 | **Particles, temp ents, sky polish** | Visual parity | `ParticleRenderer.js`, `ClientTempEnts.js` · `r_part.c`, `cl_tent.c` |
+| P4 | **Particles, temp ents, sky polish** | Partial — particles + explosion sprites | `ParticleSystem.js`, `SpriteRenderer.js` · `r_part.c`, `cl_tent.c` |
 | P4 | **Save / load / demos** | QoL | `HostCmds.js`, `ClientDemo.js` · `host_cmd.c`, `cl_demo.c` |
 | P5 | **QuakeWorld / MP** | Later | `../Quake-master/QW/` |
 
@@ -436,6 +437,8 @@ Use this when choosing what to port next. Goal: **playable Quake 1 single-player
 | Render one frame | `render/WebGpuRenderer.js` · `gl_rmain.c` / `SCR_UpdateScreen` |
 | Brush surfaces / lightmaps | `render/WorldRenderer.js` · `gl_rsurf.c` |
 | Alias / weapon model | `render/AliasRenderer.js` · `gl_mesh.c` |
+| Sprites | `render/SpriteRenderer.js`, `models/SpriteModel.js` · `r_sprite.c`, `gl_rmain.c` |
+| Particles | `render/ParticleSystem.js` · `r_part.c` |
 | HUD | `ui/StatusBar.js`, `ui/ScreenOverlay.js`, `fs/WadFile.js` · `sbar.c`, `screen.c` |
 | Sound | `audio/SoundSystem.js` · `snd_dma.c`, `snd_mem.c` |
 | Menus | `ui/Menu.js`, `ui/DrawPics.js` · `menu.c` |
@@ -528,6 +531,8 @@ User supplies a legally obtained Quake `id1` directory (at least `pak0.pak`). Fi
 | 2026-07-25 | **Main menu:** `Menu` from gfx LMPs; Single Player → New Game; Options volume/sensitivity; Help; Quit stub |
 | 2026-07-25 | **Loading / intermission:** `ScreenOverlay` (`gfx/loading.lmp`, complete/inter/finale); map-change plaque; QC intermission stats |
 | 2026-07-25 | **Weapon fire anim:** shotgun `weaponframe` 1–6 (`v_shot.mdl`); ammo consume; `attack_finished` cooldown via `playerAttack` |
+| 2026-07-25 | **Particles:** `ParticleSystem` (`R_RunParticleEffect` subset); gunshot sparks / blood on hitscan; QC `particle` builtin |
+| 2026-07-25 | **Sprites:** SPR loader + billboard draw; entity `.spr` list; QW-style `s_explod` temps via Write*/`svc_temp_entity` |
 
 ---
 
