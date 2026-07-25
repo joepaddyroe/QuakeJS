@@ -364,27 +364,31 @@ export function createBuiltins(ctx) {
     }
     RETURN_VECTOR([pitch, yaw, 0]);
   };
-  // WriteByte / WriteChar / WriteShort / WriteLong / WriteAngle / WriteCoord / WriteString / WriteEntity
-  const writeByte = () => {
-    ctx.server.writeMsg(G_FLOAT(PARM(0)), 'b', G_FLOAT(PARM(1)) | 0);
+  // WriteByte / WriteChar / WriteShort / WriteLong / WriteCoord / WriteAngle / WriteString / WriteEntity
+  builtins[52] = () => {
+    ctx.server.writeByte(G_FLOAT(PARM(0)), G_FLOAT(PARM(1)));
   };
-  builtins[52] = writeByte;
-  builtins[53] = writeByte; // char
-  builtins[54] = writeByte; // short — low byte enough for TE ids
-  builtins[55] = writeByte; // long
+  builtins[53] = () => {
+    ctx.server.writeChar(G_FLOAT(PARM(0)), G_FLOAT(PARM(1)));
+  };
+  builtins[54] = () => {
+    ctx.server.writeShort(G_FLOAT(PARM(0)), G_FLOAT(PARM(1)));
+  };
+  builtins[55] = () => {
+    ctx.server.writeLong(G_FLOAT(PARM(0)), G_FLOAT(PARM(1)));
+  };
   builtins[56] = () => {
-    // WriteCoord
-    ctx.server.writeMsg(G_FLOAT(PARM(0)), 'c', G_FLOAT(PARM(1)));
+    ctx.server.writeCoord(G_FLOAT(PARM(0)), G_FLOAT(PARM(1)));
   };
   builtins[57] = () => {
-    // WriteAngle
-    ctx.server.writeMsg(G_FLOAT(PARM(0)), 'b', ((G_FLOAT(PARM(1)) * 256) / 360) | 0);
+    ctx.server.writeAngle(G_FLOAT(PARM(0)), G_FLOAT(PARM(1)));
   };
-  builtins[58] = () => {}; // WriteString
+  builtins[58] = () => {
+    ctx.server.writeString(G_FLOAT(PARM(0)), G_STRING(PARM(1)));
+  };
   builtins[59] = () => {
-    ctx.server.writeMsg(G_FLOAT(PARM(0)), 'b', G_INT(PARM(1)) & 0xff);
-    ctx.server.writeMsg(G_FLOAT(PARM(0)), 'b', (G_INT(PARM(1)) >> 8) & 0xff);
-  }; // WriteEntity as short
+    ctx.server.writeEntity(G_FLOAT(PARM(0)), G_INT(PARM(1)));
+  };
   for (let i = 60; i <= 66; i++) builtins[i] = () => {};
   builtins[67] = () => {
     RETURN_FLOAT(0);
@@ -401,7 +405,12 @@ export function createBuiltins(ctx) {
   };
   builtins[71] = fixme;
   builtins[72] = () => {}; // cvar_set
-  builtins[73] = () => {}; // centerprint
+  builtins[73] = () => {
+    // centerprint(s)
+    const s = G_STRING(PARM(0));
+    ctx.server.writeByte(2, 26); // MSG_ALL, svc_centerprint
+    ctx.server.writeString(2, s || '');
+  };
   builtins[74] = () => {
     // ambientsound(pos, sample, vol, attenuation)
     const pos = G_VECTOR(PARM(0));

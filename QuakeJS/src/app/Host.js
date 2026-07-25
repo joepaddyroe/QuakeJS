@@ -10,6 +10,8 @@ import { Cmd } from '../core/Cmd.js';
 import { CvarStore } from '../core/Cvar.js';
 import { Console } from '../ui/Console.js';
 import { registerHostCommands } from '../ui/HostCmds.js';
+import { NetLoop } from '../net/NetLoop.js';
+import { Client } from '../client/Client.js';
 
 export class Host {
   /**
@@ -59,6 +61,25 @@ export class Host {
     this.cmd = new Cmd();
     this.cvars = new CvarStore();
     this.con = consoleUi || new Console(document.createElement('canvas'));
+
+    this.net = new NetLoop();
+    this.client = new Client({
+      net: this.net,
+      hooks: {
+        print: (t) => this.con.print(t),
+        stufftext: (t) => {
+          this.cmd.addText(t);
+          this.cmd.executeBuffer(
+            (args) => this._handleCvarArgs(args),
+            (msg) => this.con.print(msg),
+          );
+        },
+        centerprint: (t) => this.con.print(`${t}\n`),
+        lightstyle: (i, map) => this._renderer.lightStyles.set(i, map),
+        tempEntity: (te, pos, extra) =>
+          this._renderer.handleTempEntity(te, pos, extra),
+      },
+    });
 
     registerHostCommands({
       cmd: this.cmd,
@@ -110,6 +131,22 @@ export class Host {
     }
 
     this.con.print('Ready. Esc = menu, ` = console.\n');
+    this._connectLoopback();
+  }
+
+  /**
+   * Connect client ↔ server over NetLoop after a map is loaded.
+   */
+  _connectLoopback() {
+    const server = this._renderer.server;
+    if (!server) return;
+    this.client.disconnect();
+    this.net = new NetLoop();
+    this.client.net = this.net;
+    this.client.connectLocal();
+    const sock = this.net.checkNewConnections();
+    if (sock) server.attachNet(this.net, sock);
+    this.client.readPackets();
   }
 
   openMenu() {
@@ -186,6 +223,7 @@ export class Host {
       this._menu?.close();
       this._renderer.loadMap(this._fs, path, this._sound);
       this.syncPointerFromCamera();
+      this._connectLoopback();
     } finally {
       this._overlay?.hideLoading();
       this._mapLoading = false;
@@ -328,6 +366,11 @@ export class Host {
         this._renderer.collision.brushes = server.getBrushDrawList();
       }
       server.physics(frameDt, player);
+    }
+
+    if (server) {
+      server.sendClientMessages();
+      this.client.readPackets();
     }
 
     this._renderer.frame(width, height, dt);

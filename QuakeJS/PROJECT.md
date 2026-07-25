@@ -53,7 +53,7 @@ If you are picking up this project with no chat history:
 5. Respect **§2–3** (SOLID + layers) before editing.
 6. After completing work, update **§12**, **§7**, and **§15 Changelog** in this file. Leave `README.md` alone unless the change is drastic for end users.
 
-**Current maturity (2026-07-25):** id1 PAK + BSP world + hull walk + stair smooth + QuakeC + brush draw/clip + changelevel + alias MDL + sprites + lightstyles + dynamic lights + FP shotgun (fire anim) + particles + status bar + Web Audio SFX + conback console/cvars + main menu + loading/intermission overlays. No loopback protocol yet.
+**Current maturity (2026-07-25):** id1 PAK + BSP world + hull walk + QuakeC + brush ents + alias/sprites + lightstyles/dlights + particles + FP shotgun + UI (sbar/menu/conback) + **loopback client↔server** (print/TE/lightstyle). Movement still local; no entity baselines yet.
 
 ### Remaining tasks (priority order)
 
@@ -65,7 +65,7 @@ Use **§13** for file-level detail. Summary:
 | **P0** | Filesystem: PAK + `id1` search paths | Done |
 | **P1** | BSP / alias / sprite model load | Done — BSP + MDL + SPR |
 | **P1** | WebGPU world draw (brush + lightmaps) | Done (+ PVS/sky/turb/lightstyles) |
-| **P2** | Loopback client ↔ server + protocol | Not started |
+| **P2** | Loopback client ↔ server + protocol | Partial — connect + svc print/TE/lightstyle |
 | **P2** | QuakeC VM (`pr_exec` / edicts / builtins) | Partial — spawn/think/touch/changelevel |
 | **P2** | Physics / movement (`sv_phys`, `world`) | Partial — walk + brush clip + PUSH |
 | **P3** | View weapon, particles, status bar, menu | Partial — shotgun + particles + sprites + sbar + conback console + menu |
@@ -308,11 +308,12 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started
 - [x] Stair view smoothing (`view.c` oldz → eye Z)
 - [x] Clip player against brush entities (`World.brushes` / submodel hulls)
 - [x] `changelevel` builtin + Host map reload (`e1m1` …)
-- [ ] Client connect via **loopback** (`net_loop`)
+- [x] Client connect via **loopback** (`NetLoop` + `Client` parse print/TE/lightstyle)
 - [ ] Fuller builtins + `PutClientInServer` (loadout + shotgun fire anim stub done)
+- [ ] `clc_move` usercmds over loopback (still local PlayerMove)
 
 ### Phase 5 — Client playable slice
-- [ ] `CL_SendCmd` / `SV_ClientThink` movement
+- [ ] `CL_SendCmd` / `SV_ClientThink` movement via protocol
 - [ ] `CL_ParseServerMessage` entity baseline / updates
 - [ ] View punch, bob, roll (`view.c`) subset
 - [ ] Point entities: items, monsters, doors/plats/triggers via QuakeC (no hand-rolled Doom-style AI)
@@ -347,16 +348,17 @@ Last audited: **2026-07-25** against `Quake-master/WinQuake`. Re-audit after maj
 ### 12.1 Subsystem maturity
 
 ```
-Host / frame         ████░░░░░░  ~40%   rAF Host.frame; server physics + trigger touch
+Host / frame         █████░░░░░  ~50%   rAF Host.frame; loopback flush + client parse
 Filesystem (PAK)     ████████░░  ~80%   pak0+pak1; no loose files / -path
-Models (BSP/MDL/SPR) ██████░░░░  ~65%   BSP+alias MDL; no SPR
+Models (BSP/MDL/SPR) ████████░░  ~80%   BSP + alias MDL + SPR
 WebGPU render        █████████░  ~90%   world+brush+alias+sprites+lightstyles+dlights+view weapon+particles; no frustum
 Server / world       ███████░░░  ~65%   hull walk + pushers + brush clip
 QuakeC VM            ██████░░░░  ~55%   exec+edicts+builtins; doors/triggers on start
-Client / protocol    ░░░░░░░░░░   0%   view weapon pose via local edict stub
+Client / protocol    ███░░░░░░░  ~30%   loopback + parse print/TE/lightstyle; no entity updates
 UI / console/menu    █████████░  ~90%   sbar + conback console + menu + loading/intermission
 Audio                ████░░░░░░  ~40%   Web Audio SFX + Quake spatialize; no DMA mix / CD
 Saves / demos        ░░░░░░░░░░   0%
+Net (loopback)       ████░░░░░░  ~40%   NetLoop + SizeBuf; no remote drivers
 Net (non-loopback)   ░░░░░░░░░░   0%
 ```
 
@@ -413,7 +415,7 @@ Use this when choosing what to port next. Goal: **playable Quake 1 single-player
 | P2 | **QuakeC VM + builtins** | Partial — spawn/think/touch | `progs/*`, `Server.js` · `pr_exec.c`, `pr_edict.c`, `pr_cmds.c` |
 | P2 | **Draw brush ents + entity clip** | Done | `WorldRenderer` + `World.brushes` · `SV_ClipMoveToEntity` |
 | P2 | **Changelevel / map load** | Done (no intermission UI) | `Host.changeMap`, builtin #70 · `host_cmd.c` |
-| P2 | **Loopback net + SV/CL connect** | Real Quake architecture | `net/NetLoop.js`, `Client.js` · `net_loop.c`, `sv_main.c`, `cl_main.c` |
+| P2 | **Loopback net + SV/CL connect** | Partial — SizeBuf + NetLoop + ClientParse | `net/NetLoop.js`, `client/Client.js` · `net_loop.c`, `cl_parse.c` |
 | P3 | **Alias + view weapon** | Partial — FP shotgun + fire frames | `AliasRenderer.js`, `Server.playerAttack` · `gl_mesh.c`, `view.c` |
 | P3 | **Status bar + menu + console** | Done — sbar + menu + conback/conchars console | `ui/*` · `sbar.c`, `console.c`, `menu.c`, `draw.c` |
 | P3 | **Sound** | Partial — SFX + spatialize | `audio/SoundSystem.js` · `snd_dma.c` |
@@ -443,6 +445,8 @@ Use this when choosing what to port next. Goal: **playable Quake 1 single-player
 | Lightstyles | `render/LightStyles.js`, `WorldRenderer.js` · `r_light.c`, `gl_rsurf.c` |
 | Dynamic lights | `render/DynamicLights.js`, `WorldRenderer.js` · `cl_main.c`, `gl_rlight.c` |
 | Particles | `render/ParticleSystem.js` · `r_part.c` |
+| Loopback net | `net/NetLoop.js`, `net/SizeBuf.js` · `net_loop.c` |
+| Client parse | `client/Client.js`, `client/ClientParse.js` · `cl_main.c`, `cl_parse.c` |
 | HUD | `ui/StatusBar.js`, `ui/ScreenOverlay.js`, `fs/WadFile.js` · `sbar.c`, `screen.c` |
 | Sound | `audio/SoundSystem.js` · `snd_dma.c`, `snd_mem.c` |
 | Menus | `ui/Menu.js`, `ui/DrawPics.js` · `menu.c` |
@@ -540,6 +544,7 @@ User supplies a legally obtained Quake `id1` directory (at least `pak0.pak`). Fi
 | 2026-07-25 | **Lightstyles:** `LightStyles` + `R_AnimateLight`; multi-style lightmap rebuild; QC `lightstyle` builtin |
 | 2026-07-25 | **Dynamic lights:** `DynamicLights` pool; muzzle flash + TE_EXPLOSION; `R_MarkLights` / `R_AddDynamicLights` into lightmaps |
 | 2026-07-25 | **Console 2D:** canvas `Con_DrawConsole` with `gfx/conback.lmp` + wad `conchars`; `DrawPics` char/string helpers |
+| 2026-07-25 | **Phase 4 loopback:** `NetLoop` + `SizeBuf`; `Client`/`ClientParse` (print, TE, lightstyle); Write* → datagram flush |
 
 ---
 

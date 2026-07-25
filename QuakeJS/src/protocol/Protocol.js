@@ -1,0 +1,79 @@
+/**
+ * protocol.h — NetQuake message types (subset).
+ */
+
+export const PROTOCOL_VERSION = 15;
+
+export const MAX_MSGLEN = 8000; // NET_MAXMESSAGE-ish
+
+// server → client
+export const svc = {
+  bad: 0,
+  nop: 1,
+  disconnect: 2,
+  updatestat: 3,
+  version: 4,
+  setview: 5,
+  sound: 6,
+  time: 7,
+  print: 8,
+  stufftext: 9,
+  setangle: 10,
+  serverinfo: 11,
+  lightstyle: 12,
+  updatename: 13,
+  updatefrags: 14,
+  clientdata: 15,
+  stopsound: 16,
+  updatecolors: 17,
+  particle: 18,
+  damage: 19,
+  spawnstatic: 20,
+  spawnbaseline: 22,
+  temp_entity: 23,
+  setpause: 24,
+  signonnum: 25,
+  centerprint: 26,
+  killedmonster: 27,
+  foundsecret: 28,
+  spawnstaticsound: 29,
+  intermission: 30,
+  finale: 31,
+  cdtrack: 32,
+  sellscreen: 33,
+  cutscene: 34,
+};
+
+// client → server
+export const clc = {
+  bad: 0,
+  nop: 1,
+  disconnect: 2,
+  move: 3,
+  stringcmd: 4,
+};
+
+export const TE = {
+  spike: 0,
+  superspike: 1,
+  gunshot: 2,
+  explosion: 3,
+  tarexplosion: 4,
+  lightning1: 5,
+  lightning2: 6,
+  wizspike: 7,
+  knightspike: 8,
+  lightning3: 9,
+  lavasplash: 10,
+  teleport: 11,
+  explosion2: 12,
+  beam: 13,
+};
+
+/** MSG_* WriteDest */
+export const MSG = {
+  BROADCAST: 0,
+  ONE: 1,
+  ALL: 2,
+  INIT: 3,
+};

@@ -54,6 +54,60 @@ export class WebGpuRenderer {
     return this._particles;
   }
 
+  /** @returns {import('./LightStyles.js').LightStyles} */
+  get lightStyles() {
+    return this._lightStyles;
+  }
+
+  /**
+   * ClientParse TE / particle hooks (effects formerly local on Server).
+   * @param {number} te
+   * @param {Float32Array} pos
+   * @param {object} [extra]
+   */
+  handleTempEntity(te, pos, extra = {}) {
+    const TE_SPIKE = 0;
+    const TE_SUPERSPIKE = 1;
+    const TE_GUNSHOT = 2;
+    const TE_EXPLOSION = 3;
+    const TE_TAREXPLOSION = 4;
+
+    if (extra.particle) {
+      this._particles.runEffect(
+        pos,
+        extra.dir || [0, 0, 0],
+        extra.color | 0,
+        extra.count | 0,
+      );
+      return;
+    }
+    if (te === TE_EXPLOSION || te === TE_TAREXPLOSION) {
+      this._particles.explosion(pos);
+      this._dlights.explosion(pos, this.server?.clientTime ?? this._time);
+      this._spriteRend.spawnExplosion(pos, this.server?.clientTime ?? this._time);
+      if (this.server?.sound) {
+        this.server.precacheSound('weapons/r_exp3.wav');
+        this.server.sound.startSound(
+          -1,
+          0,
+          'weapons/r_exp3.wav',
+          pos,
+          255,
+          1,
+        );
+      }
+      return;
+    }
+    if (te === TE_GUNSHOT || te === TE_SPIKE || te === TE_SUPERSPIKE) {
+      this._particles.runEffect(
+        pos,
+        [0, 0, 0],
+        0,
+        te === TE_GUNSHOT ? 20 : 10,
+      );
+    }
+  }
+
   /** @returns {FlyCamera|PlayerMove} */
   get camera() {
     return this.mode === 'world' && this.player ? this.player : this._demoCamera;
@@ -87,9 +141,6 @@ export class WebGpuRenderer {
     this.server = new Server(bsp, fs, mapPath, sound, this._lightStyles);
     this.server.particles = this._particles;
     this.server.dlights = this._dlights;
-    this.server.onTempEntity = (te, pos) => {
-      if (te === 3 || te === 4) this._spriteRend.spawnExplosion(pos);
-    };
     this._worldRend.invalidateLightmapCache();
     this.collision = this.server.world;
     this.player = new PlayerMove(this.collision);

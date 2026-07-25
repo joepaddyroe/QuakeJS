@@ -29,6 +29,9 @@ import { angleVectors } from '../math/QuakeMath.js';
 import { World } from './World.js';
 import { PLAYER_MINS, PLAYER_MAXS } from './PlayerMove.js';
 import { LightStyles } from '../render/LightStyles.js';
+import { SizeBuf } from '../net/SizeBuf.js';
+import { MSG, svc } from '../protocol/Protocol.js';
+import { MAX_LIGHTSTYLES } from '../render/LightStyles.js';
 
 /**
  * @param {string} data
@@ -87,13 +90,18 @@ export class Server {
     /** @type {import('../render/DynamicLights.js').DynamicLights|null} */
     this.dlights = null;
     /**
-     * Client temp-entity hook (TE_EXPLOSION sprites, etc.).
+     * @deprecated effects now go through loopback → ClientParse; kept as no-op hook site
      * @type {((te: number, pos: Float32Array) => void)|null}
      */
     this.onTempEntity = null;
-    /** Local unreliable datagram for Write* → svc_temp_entity (no loopback yet). */
-    /** @type {{ t: 'b'|'c', v: number }[]} */
-    this._datagram = [];
+    /** Unreliable datagram (MSG_BROADCAST) */
+    this.datagram = new SizeBuf(8192);
+    /** Reliable datagram (MSG_ALL) */
+    this.reliable = new SizeBuf(8192);
+    /** @type {import('../net/NetLoop.js').NetLoop|null} */
+    this.net = null;
+    /** @type {import('../net/NetLoop.js').LoopSocket|null} */
+    this.netSocket = null;
     this.mapName = mapName.replace(/^maps\//, '').replace(/\.bsp$/i, '');
     this.world = new World(bsp);
     this.progs = new Progs(fs.load('progs.dat'));
@@ -315,132 +323,106 @@ export class Server {
   }
 
   /**
+   * Attach loopback socket after client connects.
+   * @param {import('../net/NetLoop.js').NetLoop} net
+   * @param {import('../net/NetLoop.js').LoopSocket} socket
+   */
+  attachNet(net, socket) {
+    this.net = net;
+    this.netSocket = socket;
+    this.datagram.clear();
+    this.reliable.clear();
+    // Signon-ish: print + lightstyles
+    this.writePrint('QuakeJS loopback — server active\n');
+    for (let i = 0; i < MAX_LIGHTSTYLES; i++) {
+      const ls = this.lightStyles.styles[i];
+      if (!ls.length) continue;
+      this.reliable.writeByte(svc.lightstyle);
+      this.reliable.writeByte(i);
+      this.reliable.writeString(ls.map);
+    }
+    this.sendClientMessages();
+  }
+
+  /**
+   * @param {string} text
+   */
+  writePrint(text) {
+    this.reliable.writeByte(svc.print);
+    this.reliable.writeString(text);
+  }
+
+  /**
    * PF_lightstyle — set style string (also used by light entities).
    * @param {number} style
    * @param {string} value
    */
   setLightstyle(style, value) {
-    this.lightStyles.set(style | 0, value || '');
-  }
-
-  /**
-   * PF_Write* — append to local datagram (MSG_BROADCAST / MSG_ALL).
-   * @param {number} dest
-   * @param {'b'|'c'} kind
-   * @param {number} value
-   */
-  writeMsg(dest, kind, value) {
-    // 0=BROADCAST, 2=ALL — ignore ONE/INIT until loopback
-    if (dest !== 0 && dest !== 2) return;
-    this._datagram.push({ t: kind, v: value });
-    this._parseDatagram();
-  }
-
-  /**
-   * Opportunistically parse svc_temp_entity from the write buffer.
-   */
-  _parseDatagram() {
-    const SVC_TEMPENTITY = 23;
-    const TE_SPIKE = 0;
-    const TE_SUPERSPIKE = 1;
-    const TE_GUNSHOT = 2;
-    const TE_EXPLOSION = 3;
-    const TE_TAREXPLOSION = 4;
-    const TE_TELEPORT = 11;
-    const TE_EXPLOSION2 = 12;
-
-    const takeCoords = (n) => {
-      const pos = new Float32Array(3);
-      for (let i = 0; i < n; i++) pos[i] = this._datagram.shift().v;
-      return pos;
-    };
-
-    while (this._datagram.length >= 2) {
-      if (this._datagram[0].t !== 'b') {
-        this._datagram.shift();
-        continue;
-      }
-      if (this._datagram[0].v !== SVC_TEMPENTITY) {
-        this._datagram.shift();
-        continue;
-      }
-      if (this._datagram[1].t !== 'b') {
-        this._datagram.shift();
-        continue;
-      }
-      const te = this._datagram[1].v;
-      // Peek past svc + te
-      const rest = this._datagram.slice(2);
-
-      if (
-        te === TE_GUNSHOT ||
-        te === TE_SPIKE ||
-        te === TE_SUPERSPIKE ||
-        te === TE_EXPLOSION ||
-        te === TE_TAREXPLOSION ||
-        te === TE_TELEPORT
-      ) {
-        if (rest.length < 3 || rest[0].t !== 'c' || rest[1].t !== 'c' || rest[2].t !== 'c') {
-          return; // wait for coords
-        }
-        this._datagram.shift();
-        this._datagram.shift();
-        const pos = takeCoords(3);
-        this._dispatchTempEntity(te, pos);
-        continue;
-      }
-      if (te === TE_EXPLOSION2) {
-        // pos + colorStart + colorLength bytes
-        if (
-          rest.length < 5 ||
-          rest[0].t !== 'c' ||
-          rest[1].t !== 'c' ||
-          rest[2].t !== 'c' ||
-          rest[3].t !== 'b' ||
-          rest[4].t !== 'b'
-        ) {
-          return;
-        }
-        this._datagram.shift();
-        this._datagram.shift();
-        const pos = takeCoords(3);
-        this._datagram.shift();
-        this._datagram.shift();
-        this._dispatchTempEntity(te, pos);
-        continue;
-      }
-      // Unknown / beams — drop svc+te and hope
-      this._datagram.shift();
-      this._datagram.shift();
+    const i = style | 0;
+    const map = value || '';
+    this.lightStyles.set(i, map);
+    if (this.netSocket) {
+      this.reliable.writeByte(svc.lightstyle);
+      this.reliable.writeByte(i);
+      this.reliable.writeString(map);
     }
   }
 
   /**
-   * @param {number} te
-   * @param {Float32Array} pos
+   * @param {number} dest MSG_*
+   * @returns {SizeBuf}
    */
-  _dispatchTempEntity(te, pos) {
-    const TE_GUNSHOT = 2;
-    const TE_EXPLOSION = 3;
-    const TE_TAREXPLOSION = 4;
-    const TE_SPIKE = 0;
-    const TE_SUPERSPIKE = 1;
+  _bufForDest(dest) {
+    if (dest === MSG.ALL || dest === MSG.INIT) return this.reliable;
+    return this.datagram;
+  }
 
-    if (te === TE_EXPLOSION || te === TE_TAREXPLOSION) {
-      this.particles?.explosion(pos);
-      this.dlights?.explosion(pos, this.clientTime);
-      this.onTempEntity?.(te, pos);
-      if (this.sound) {
-        this.precacheSound('weapons/r_exp3.wav');
-        this.sound.startSound(-1, 0, 'weapons/r_exp3.wav', pos, 255, 1);
-      }
-      return;
+  /** @param {number} dest @param {number} v */
+  writeByte(dest, v) {
+    this._bufForDest(dest).writeByte(v | 0);
+  }
+  /** @param {number} dest @param {number} v */
+  writeChar(dest, v) {
+    this._bufForDest(dest).writeChar(v | 0);
+  }
+  /** @param {number} dest @param {number} v */
+  writeShort(dest, v) {
+    this._bufForDest(dest).writeShort(v | 0);
+  }
+  /** @param {number} dest @param {number} v */
+  writeLong(dest, v) {
+    this._bufForDest(dest).writeLong(v | 0);
+  }
+  /** @param {number} dest @param {number} v */
+  writeCoord(dest, v) {
+    this._bufForDest(dest).writeCoord(v);
+  }
+  /** @param {number} dest @param {number} v */
+  writeAngle(dest, v) {
+    this._bufForDest(dest).writeAngle(v);
+  }
+  /** @param {number} dest @param {string} v */
+  writeString(dest, v) {
+    this._bufForDest(dest).writeString(v);
+  }
+  /** @param {number} dest @param {number} ent */
+  writeEntity(dest, ent) {
+    this._bufForDest(dest).writeShort(ent | 0);
+  }
+
+  /**
+   * SV_SendClientMessages — flush datagrams over loopback.
+   */
+  sendClientMessages() {
+    if (!this.net || !this.netSocket) return;
+    if (this.datagram.cursize > 0) {
+      this.net.sendUnreliable(this.netSocket, this.datagram);
+      this.datagram.clear();
     }
-    if (te === TE_GUNSHOT || te === TE_SPIKE || te === TE_SUPERSPIKE) {
-      this.particles?.runEffect(pos, [0, 0, 0], 0, te === TE_GUNSHOT ? 20 : 10);
-      return;
+    if (this.reliable.cursize > 0) {
+      this.net.sendReliable(this.netSocket, this.reliable);
+      this.reliable.clear();
     }
-    this.onTempEntity?.(te, pos);
   }
 
   /**
