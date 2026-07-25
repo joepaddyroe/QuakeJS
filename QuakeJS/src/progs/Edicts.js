@@ -189,6 +189,14 @@ export class EdictStore {
       absmin[1] -= 15;
       absmax[0] += 15;
       absmax[1] += 15;
+    } else {
+      // SV_LinkEdict — epsilon expand so CloseEnough / clip match vanilla
+      absmin[0] -= 1;
+      absmin[1] -= 1;
+      absmin[2] -= 1;
+      absmax[0] += 1;
+      absmax[1] += 1;
+      absmax[2] += 1;
     }
     this.setVec(edict, f.absmin, absmin);
     this.setVec(edict, f.absmax, absmax);
