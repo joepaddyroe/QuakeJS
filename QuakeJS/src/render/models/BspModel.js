@@ -146,6 +146,13 @@ export class BspModel {
     this.marksurfaces = new Uint16Array(0);
     /** @type {Uint8Array|null} */
     this.visdata = null;
+    /** @type {{ planenum: number, children: [number, number] }[]} */
+    this.clipnodes = [];
+    /**
+     * Hulls[0]=point (from draw nodes), [1]=player, [2]=large
+     * @type {{ clipnodes: { planenum: number, children: [number, number] }[], planes: typeof this.planes, firstclipnode: number, lastclipnode: number, clipMins: Float32Array, clipMaxs: Float32Array }[]}
+     */
+    this.hulls = [];
     /** vis leaf count for PVS row size (submodel 0 visleafs) */
     this.numVisLeafs = 0;
     /** @type {{ mins: Float32Array, maxs: Float32Array, origin: Float32Array, headnode: number[], firstface: number, numfaces: number, visleafs: number }[]} */
@@ -189,8 +196,10 @@ export class BspModel {
     this._loadVisibility();
     this._loadLeafs();
     this._loadNodes();
+    this._loadClipnodes();
     this._loadEntities();
     this._loadSubmodels();
+    this._buildHulls();
     this.numVisLeafs = this.submodels[0] ? this.submodels[0].visleafs : this.leafs.length;
     this._decompressedVis = new Uint8Array((this.numVisLeafs + 7) >> 3);
     this.playerStart = findPlayerStart(this.entities);
@@ -486,6 +495,79 @@ export class BspModel {
         this.leafs[leafIndex].parent = nodeIndex;
       }
     }
+  }
+
+  _loadClipnodes() {
+    const { ofs, len } = this._lump(LUMP_CLIPNODES);
+    if (len <= 0) {
+      this.clipnodes = [];
+      return;
+    }
+    const count = len / 8;
+    const v = this._view;
+    this.clipnodes = new Array(count);
+    for (let i = 0; i < count; i++) {
+      const o = ofs + i * 8;
+      this.clipnodes[i] = {
+        planenum: v.getInt32(o, true),
+        children: /** @type {[number, number]} */ ([
+          v.getInt16(o + 4, true),
+          v.getInt16(o + 6, true),
+        ]),
+      };
+    }
+  }
+
+  /**
+   * Mod_MakeHull0 + Mod_LoadClipnodes hull setup for world submodel 0.
+   */
+  _buildHulls() {
+    /** @type {{ planenum: number, children: [number, number] }[]} */
+    const hull0nodes = new Array(this.nodes.length);
+    for (let i = 0; i < this.nodes.length; i++) {
+      const n = this.nodes[i];
+      /** @type {[number, number]} */
+      const children = [0, 0];
+      for (let j = 0; j < 2; j++) {
+        const c = n.children[j];
+        if (c < 0) {
+          children[j] = this.leafs[-1 - c].contents;
+        } else {
+          children[j] = c;
+        }
+      }
+      hull0nodes[i] = { planenum: n.planenum, children };
+    }
+
+    const bm = this.submodels[0];
+    const clipLast = Math.max(0, this.clipnodes.length - 1);
+
+    this.hulls = [
+      {
+        clipnodes: hull0nodes,
+        planes: this.planes,
+        firstclipnode: bm ? bm.headnode[0] : 0,
+        lastclipnode: Math.max(0, hull0nodes.length - 1),
+        clipMins: new Float32Array([0, 0, 0]),
+        clipMaxs: new Float32Array([0, 0, 0]),
+      },
+      {
+        clipnodes: this.clipnodes,
+        planes: this.planes,
+        firstclipnode: bm ? bm.headnode[1] : 0,
+        lastclipnode: clipLast,
+        clipMins: new Float32Array([-16, -16, -24]),
+        clipMaxs: new Float32Array([16, 16, 32]),
+      },
+      {
+        clipnodes: this.clipnodes,
+        planes: this.planes,
+        firstclipnode: bm ? bm.headnode[2] : 0,
+        lastclipnode: clipLast,
+        clipMins: new Float32Array([-32, -32, -24]),
+        clipMaxs: new Float32Array([32, 32, 64]),
+      },
+    ];
   }
 
   /**

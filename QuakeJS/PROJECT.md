@@ -53,7 +53,7 @@ If you are picking up this project with no chat history:
 5. Respect **§2–3** (SOLID + layers) before editing.
 6. After completing work, update **§12**, **§7**, and **§15 Changelog** in this file. Leave `README.md` alone unless the change is drastic for end users.
 
-**Current maturity (2026-07-25):** Loads id1 PAKs; draws **BSP world** with textures, lightmaps, **PVS culling**, **sky** (dual layer), and **turb water**. Fly camera (no clip). No entities / QuakeC yet.
+**Current maturity (2026-07-25):** id1 PAK + BSP world (textures, lightmaps, PVS, sky, turb) + **hull1 player walk** (gravity, jump, steps, noclip). No QuakeC / entities / triggers yet.
 
 ### Remaining tasks (priority order)
 
@@ -67,7 +67,7 @@ Use **§13** for file-level detail. Summary:
 | **P1** | WebGPU world draw (brush + lightmaps) | Done (+ PVS/sky/turb) |
 | **P2** | Loopback client ↔ server + protocol | Not started |
 | **P2** | QuakeC VM (`pr_exec` / edicts / builtins) | Not started |
-| **P2** | Physics / movement (`sv_phys`, `world`) | Not started |
+| **P2** | Physics / movement (`sv_phys`, `world`) | Partial — world hull walk only |
 | **P3** | View weapon, particles, status bar, menu | Not started |
 | **P3** | Sound (DMA-style mix → Web Audio) | Not started |
 | **P4** | Saves, demos, console polish | Not started |
@@ -299,7 +299,9 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started
 - [ ] Edict pool + field layout (`progs.dat` CRC / defs)
 - [ ] QuakeC interpreter (`PrExec`)
 - [ ] Builtins subset (`PrBuiltins`) — enough for `worldspawn` / player
-- [ ] `SV_SpawnServer` / `SV_Physics` / `World` movement & hulls
+- [x] World hull collision (`World.js` — PointContents + RecursiveHullCheck)
+- [x] Player walk scaffold (`PlayerMove.js` — accelerate / FlyMove / step-up / jump)
+- [ ] `SV_SpawnServer` full + entity physics
 - [ ] Client connect via **loopback** (`net_loop`)
 
 ### Phase 5 — Client playable slice
@@ -341,7 +343,7 @@ Host / frame         ███░░░░░░░  ~30%   rAF Host.frame; map 
 Filesystem (PAK)     ████████░░  ~80%   pak0+pak1; no loose files / -path
 Models (BSP/MDL/SPR) █████░░░░░  ~55%   BSP+nodes/leafs/vis; no MDL/SPR
 WebGPU render        ███████░░░  ~70%   solid+lm+PVS+sky+turb; no frustum/alias
-Server / world       ░░░░░░░░░░   0%
+Server / world       ████░░░░░░  ~35%   hull trace + player walk; no edicts/QC
 QuakeC VM            ░░░░░░░░░░   0%
 Client / protocol    ░░░░░░░░░░   0%
 UI / console/menu    ░░░░░░░░░░   0%   HUD text overlay only
@@ -356,10 +358,11 @@ Net (non-loopback)   ░░░░░░░░░░   0%
 |------|-----------|-------|
 | WebGPU bring-up | `GpuDevice.js`, `WebGpuRenderer.js` | Device + present |
 | PAK filesystem | `PakFile.js`, `FileSystem.js` | id1 pak0/pak1 |
-| BSP load | `BspModel.js` | BSP29 + nodes/leafs/vis/marksurfaces |
+| BSP load | `BspModel.js` | BSP29 + nodes/leafs/vis/clipnodes/hulls |
 | PVS | `BspModel.markLeaves` / `gatherVisibleFaces` | Leaf PVS → marksurfaces |
 | World draw | `WorldRenderer.js` | Texture × lightmap; sky dual-layer; turb warp |
-| Quake camera | `QuakeCamera.js` | Z-up, degrees, AngleVectors |
+| Collision | `server/World.js` | Hull0 contents + hull1 player trace |
+| Player move | `server/PlayerMove.js` | Walk/jump/step/noclip scaffold |
 
 ### 12.3 Partial — known gaps
 
@@ -397,9 +400,9 @@ Use this when choosing what to port next. Goal: **playable Quake 1 single-player
 | P1 | **BSP load + lightmaps** | Done (static) | `models/BspModel.js`, `WorldRenderer.js` · `model.c`, `gl_rsurf.c` |
 | P1 | **Clear + draw world** | Done | `WebGpuRenderer.js` · `gl_rmain.c` |
 | P1 | **PVS + sky/turb** | Done | `BspModel.js`, `WorldRenderer.js` · `gl_warp.c`, `Mod_LeafPVS` |
+| P2 | **Physics / hulls** | Partial — world walk | `server/World.js`, `PlayerMove.js` · `world.c`, `sv_phys.c` |
 | P2 | **Loopback net + SV/CL connect** | Real Quake architecture | `net/NetLoop.js`, `Server.js`, `Client.js` · `net_loop.c`, `sv_main.c`, `cl_main.c` |
 | P2 | **QuakeC VM + builtins** | Game rules live in progs | `progs/*` · `pr_exec.c`, `pr_edict.c`, `pr_cmds.c` |
-| P2 | **Physics / hulls** | Movement & combat | `ServerPhys.js`, `World.js` · `sv_phys.c`, `world.c` |
 | P3 | **Alias + view weapon** | Player presence | `AliasRenderer.js` · `gl_mesh.c`, `view.c` |
 | P3 | **Status bar + menu + console** | Operable game | `ui/*` · `sbar.c`, `menu.c`, `console.c` |
 | P3 | **Sound** | Feedback | `audio/*` · `snd_dma.c`, `snd_mix.c` |
@@ -499,6 +502,7 @@ User supplies a legally obtained Quake `id1` directory (at least `pak0.pak`). Fi
 | 2026-07-25 | **Phase 0 shell:** WebGPU swapchain, `Host`/`GameLoop`, `DemoRoomRenderer` scaffolding + fly camera (WASD / pointer lock) |
 | 2026-07-25 | **Phase 1 data + world draw:** `PakFile`/`FileSystem`, BSP29 `BspModel`, `WorldRenderer` (texture×lightmap), `QuakeCamera` spawn on `maps/start.bsp` |
 | 2026-07-25 | **PVS + sky/turb:** nodes/leafs/vis, marksurfaces culling; dual-layer sky + water warp shaders |
+| 2026-07-25 | **Player collision walk:** clipnodes/hulls, `World` trace, `PlayerMove` (gravity/jump/steps); `N` noclip |
 
 ---
 
