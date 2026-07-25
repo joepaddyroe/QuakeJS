@@ -21,6 +21,8 @@ import {
   SOLID_BSP,
   SOLID_SLIDEBOX,
   FL_ONGROUND,
+  FL_FLY,
+  FL_SWIM,
   FL_CLIENT,
 } from '../progs/Edicts.js';
 import { PrExec } from '../progs/PrExec.js';
@@ -1212,8 +1214,10 @@ export class Server {
         case MOVETYPE_FLY:
         case MOVETYPE_WALK:
         case MOVETYPE_NOCLIP:
-        case MOVETYPE_STEP:
           this._runThink(e, frametime);
+          break;
+        case MOVETYPE_STEP:
+          this._physicsStep(e, frametime);
           break;
         default:
           this._runThink(e, frametime);
@@ -1431,6 +1435,98 @@ export class Server {
         this.exec.reset();
         console.error(`door use ${e}`, err);
       }
+    }
+  }
+
+  /**
+   * SV_Physics_Step — freefall when airborne (dog leap / falling monsters), then think.
+   * @param {number} ent
+   * @param {number} frametime
+   */
+  _physicsStep(ent, frametime) {
+    const f = this.progs.f;
+    const edicts = this.edicts;
+    const flags = edicts.getFloat(ent, f.flags) | 0;
+
+    // Freefall if not onground / fly / swim (dog_leap clears FL_ONGROUND)
+    if (!(flags & (FL_ONGROUND | FL_FLY | FL_SWIM))) {
+      const vel = edicts.getVec(ent, f.velocity);
+      vel[2] -= 800 * frametime;
+      edicts.setVec(ent, f.velocity, vel);
+
+      const o = edicts.getVec(ent, f.origin);
+      const end = new Float32Array([
+        o[0] + vel[0] * frametime,
+        o[1] + vel[1] * frametime,
+        o[2] + vel[2] * frametime,
+      ]);
+      const mins = new Float32Array(edicts.getVec(ent, f.mins));
+      const maxs = new Float32Array(edicts.getVec(ent, f.maxs));
+      const tr = this.world.playerMove(o, end, mins, maxs);
+      edicts.setVec(ent, f.origin, tr.endpos);
+      edicts.linkAbs(ent);
+
+      if (tr.fraction < 1) {
+        if (tr.plane.normal[2] > 0.7) {
+          // On ground before touch — Dog_JumpTouch expects FL_ONGROUND + checkbottom
+          edicts.setFloat(
+            ent,
+            f.flags,
+            (edicts.getFloat(ent, f.flags) | 0) | FL_ONGROUND,
+          );
+          edicts.setVec(ent, f.velocity, [0, 0, 0]);
+        } else {
+          const v = edicts.getVec(ent, f.velocity);
+          const backoff =
+            v[0] * tr.plane.normal[0] +
+            v[1] * tr.plane.normal[1] +
+            v[2] * tr.plane.normal[2];
+          v[0] -= tr.plane.normal[0] * backoff;
+          v[1] -= tr.plane.normal[1] * backoff;
+          v[2] -= tr.plane.normal[2] * backoff;
+          edicts.setVec(ent, f.velocity, v);
+        }
+        // SV_Impact (world=0 or brush) — Dog_JumpTouch → dog_run1
+        this.impact(ent, tr.ent | 0);
+        if (edicts.free[ent]) return;
+      }
+
+      // Mid-air contact with local player (leap bite)
+      this._touchSolidEntities(ent);
+      if (edicts.free[ent]) return;
+    }
+
+    this._runThink(ent, frametime);
+  }
+
+  /**
+   * Box-overlap impacts for STEP freefall (player / other solids).
+   * @param {number} ent
+   */
+  _touchSolidEntities(ent) {
+    const edicts = this.edicts;
+    const f = this.progs.f;
+    if (edicts.free[ent]) return;
+    const amin = edicts.getVec(ent, f.absmin);
+    const amax = edicts.getVec(ent, f.absmax);
+    for (let e = 1; e < edicts.numEdicts; e++) {
+      if (e === ent || edicts.free[e]) continue;
+      const solid = edicts.getFloat(e, f.solid) | 0;
+      if (solid === SOLID_NOT || solid === SOLID_TRIGGER) continue;
+      const bmin = edicts.getVec(e, f.absmin);
+      const bmax = edicts.getVec(e, f.absmax);
+      if (
+        amin[0] > bmax[0] ||
+        amin[1] > bmax[1] ||
+        amin[2] > bmax[2] ||
+        amax[0] < bmin[0] ||
+        amax[1] < bmin[1] ||
+        amax[2] < bmin[2]
+      ) {
+        continue;
+      }
+      this.impact(ent, e);
+      if (edicts.free[ent]) return;
     }
   }
 
