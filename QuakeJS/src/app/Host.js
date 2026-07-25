@@ -24,7 +24,7 @@ export class Host {
    * @param {import('../audio/SoundSystem.js').SoundSystem} [deps.sound]
    * @param {import('../ui/Menu.js').Menu} [deps.menu]
    * @param {import('../ui/ScreenOverlay.js').ScreenOverlay} [deps.overlay]
-   * @param {HTMLElement} [deps.consoleRoot]
+   * @param {import('../ui/Console.js').Console} [deps.console]
    */
   constructor({
     canvas,
@@ -37,7 +37,7 @@ export class Host {
     sound = null,
     menu = null,
     overlay = null,
-    consoleRoot = document.body,
+    console: consoleUi = null,
   }) {
     this._canvas = canvas;
     this._hud = hud;
@@ -58,7 +58,7 @@ export class Host {
 
     this.cmd = new Cmd();
     this.cvars = new CvarStore();
-    this.con = new Console(consoleRoot);
+    this.con = consoleUi || new Console(document.createElement('canvas'));
 
     registerHostCommands({
       cmd: this.cmd,
@@ -343,6 +343,7 @@ export class Host {
     }
 
     if (this._menu) this._menu.frame(dt);
+    this.con.frame(dt);
 
     const interInfo = server ? server.getIntermissionInfo() : null;
     if (this._overlay) {

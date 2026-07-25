@@ -53,7 +53,7 @@ If you are picking up this project with no chat history:
 5. Respect **§2–3** (SOLID + layers) before editing.
 6. After completing work, update **§12**, **§7**, and **§15 Changelog** in this file. Leave `README.md` alone unless the change is drastic for end users.
 
-**Current maturity (2026-07-25):** id1 PAK + BSP world + hull walk + stair smooth + QuakeC + brush draw/clip + changelevel + alias MDL + sprites + lightstyles + dynamic lights + FP shotgun (fire anim) + particles + status bar + Web Audio SFX + console/cvars + main menu + loading/intermission overlays. No loopback protocol yet.
+**Current maturity (2026-07-25):** id1 PAK + BSP world + hull walk + stair smooth + QuakeC + brush draw/clip + changelevel + alias MDL + sprites + lightstyles + dynamic lights + FP shotgun (fire anim) + particles + status bar + Web Audio SFX + conback console/cvars + main menu + loading/intermission overlays. No loopback protocol yet.
 
 ### Remaining tasks (priority order)
 
@@ -68,7 +68,7 @@ Use **§13** for file-level detail. Summary:
 | **P2** | Loopback client ↔ server + protocol | Not started |
 | **P2** | QuakeC VM (`pr_exec` / edicts / builtins) | Partial — spawn/think/touch/changelevel |
 | **P2** | Physics / movement (`sv_phys`, `world`) | Partial — walk + brush clip + PUSH |
-| **P3** | View weapon, particles, status bar, menu | Partial — shotgun + particles + sprites + sbar + console + menu |
+| **P3** | View weapon, particles, status bar, menu | Partial — shotgun + particles + sprites + sbar + conback console + menu |
 | **P3** | Sound (DMA-style mix → Web Audio) | Partial — SFX + spatialize |
 | **P4** | Saves, demos, console polish | Not started |
 | **P5** | QuakeWorld / multiplayer | Not started |
@@ -294,7 +294,7 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started
 - [x] Sprites (SPR load + billboard draw; QW-style explosion temps)
 - [x] Lightstyles (`R_AnimateLight` + multi-layer lightmaps)
 - [x] Dynamic lights (muzzle flash / explosion dlights into lightmaps)
-- [ ] 2D draw (`Draw_Pic`, console background)
+- [x] 2D draw (`Draw_Pic` / conchars + console `conback`)
 - [ ] Frustum cull on BSP nodes (`R_CullBox`)
 
 ### Phase 4 — Server + QuakeC
@@ -318,10 +318,11 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started
 - [ ] Point entities: items, monsters, doors/plats/triggers via QuakeC (no hand-rolled Doom-style AI)
 
 ### Phase 6 — UI / meta
-- [x] Console + cvars + commands (`cmd`, `cvar`, `console`, `keys`) — basic overlay
+- [x] Console + cvars + commands (`cmd`, `cvar`, `console`, `keys`) — conback + conchars canvas
 - [x] Menus (`menu.c`) — main / singleplayer / options / help / quit
 - [x] Status bar (`sbar.c`) — health / armor / ammo / face + inventory strip
 - [x] Loading plaque / intermission / finale messages
+- [ ] Notify / centerprint polish
 
 ### Phase 7 — Audio
 - [x] SFX from PAK (`sound/*.wav`) via Web Audio
@@ -353,7 +354,7 @@ WebGPU render        █████████░  ~90%   world+brush+alias+sp
 Server / world       ███████░░░  ~65%   hull walk + pushers + brush clip
 QuakeC VM            ██████░░░░  ~55%   exec+edicts+builtins; doors/triggers on start
 Client / protocol    ░░░░░░░░░░   0%   view weapon pose via local edict stub
-UI / console/menu    ████████░░  ~80%   sbar + console + menu + loading/intermission
+UI / console/menu    █████████░  ~90%   sbar + conback console + menu + loading/intermission
 Audio                ████░░░░░░  ~40%   Web Audio SFX + Quake spatialize; no DMA mix / CD
 Saves / demos        ░░░░░░░░░░   0%
 Net (non-loopback)   ░░░░░░░░░░   0%
@@ -414,7 +415,7 @@ Use this when choosing what to port next. Goal: **playable Quake 1 single-player
 | P2 | **Changelevel / map load** | Done (no intermission UI) | `Host.changeMap`, builtin #70 · `host_cmd.c` |
 | P2 | **Loopback net + SV/CL connect** | Real Quake architecture | `net/NetLoop.js`, `Client.js` · `net_loop.c`, `sv_main.c`, `cl_main.c` |
 | P3 | **Alias + view weapon** | Partial — FP shotgun + fire frames | `AliasRenderer.js`, `Server.playerAttack` · `gl_mesh.c`, `view.c` |
-| P3 | **Status bar + menu + console** | Partial — sbar + console + menu + overlays | `ui/*` · `sbar.c`, `console.c`, `menu.c`, `screen.c` |
+| P3 | **Status bar + menu + console** | Done — sbar + menu + conback/conchars console | `ui/*` · `sbar.c`, `console.c`, `menu.c`, `draw.c` |
 | P3 | **Sound** | Partial — SFX + spatialize | `audio/SoundSystem.js` · `snd_dma.c` |
 | P4 | **Particles, temp ents, sky polish** | Partial — particles + sprites + lightstyles + dlights | `ParticleSystem.js`, `SpriteRenderer.js`, `LightStyles.js`, `DynamicLights.js` |
 | P4 | **Save / load / demos** | QoL | `HostCmds.js`, `ClientDemo.js` · `host_cmd.c`, `cl_demo.c` |
@@ -538,6 +539,7 @@ User supplies a legally obtained Quake `id1` directory (at least `pak0.pak`). Fi
 | 2026-07-25 | **Sprites:** SPR loader + billboard draw; entity `.spr` list; QW-style `s_explod` temps via Write*/`svc_temp_entity` |
 | 2026-07-25 | **Lightstyles:** `LightStyles` + `R_AnimateLight`; multi-style lightmap rebuild; QC `lightstyle` builtin |
 | 2026-07-25 | **Dynamic lights:** `DynamicLights` pool; muzzle flash + TE_EXPLOSION; `R_MarkLights` / `R_AddDynamicLights` into lightmaps |
+| 2026-07-25 | **Console 2D:** canvas `Con_DrawConsole` with `gfx/conback.lmp` + wad `conchars`; `DrawPics` char/string helpers |
 
 ---
 

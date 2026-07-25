@@ -13,6 +13,7 @@ import { WebGpuRenderer } from './render/WebGpuRenderer.js';
 import { StatusBar } from './ui/StatusBar.js';
 import { Menu } from './ui/Menu.js';
 import { ScreenOverlay } from './ui/ScreenOverlay.js';
+import { Console } from './ui/Console.js';
 
 /**
  * @param {string} message
@@ -29,9 +30,10 @@ async function main() {
   const sbarCanvas = /** @type {HTMLCanvasElement|null} */ (document.getElementById('sbar'));
   const menuCanvas = /** @type {HTMLCanvasElement|null} */ (document.getElementById('menu'));
   const overlayCanvas = /** @type {HTMLCanvasElement|null} */ (document.getElementById('overlay'));
+  const consoleCanvas = /** @type {HTMLCanvasElement|null} */ (document.getElementById('console'));
   const hud = document.getElementById('hud');
-  if (!canvas || !hud || !sbarCanvas || !menuCanvas || !overlayCanvas) {
-    throw new Error('Missing #viewport, #sbar, #menu, #overlay, or #hud');
+  if (!canvas || !hud || !sbarCanvas || !menuCanvas || !overlayCanvas || !consoleCanvas) {
+    throw new Error('Missing #viewport, #sbar, #menu, #overlay, #console, or #hud');
   }
 
   let gpu;
@@ -104,6 +106,13 @@ async function main() {
     console.warn('Screen overlay load failed:', err);
   }
 
+  const consoleUi = new Console(consoleCanvas);
+  try {
+    await consoleUi.load(fs);
+  } catch (err) {
+    console.warn('Console load failed:', err);
+  }
+
   const mapCandidates = ['maps/start.bsp', 'maps/e1m1.bsp'];
   let loaded = false;
   let lastErr = '';
@@ -133,6 +142,7 @@ async function main() {
     sound,
     menu,
     overlay,
+    console: consoleUi,
   });
   hostRef = host;
   host.syncPointerFromCamera();

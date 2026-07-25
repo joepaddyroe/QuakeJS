@@ -1,5 +1,5 @@
 /**
- * Shared 2D pic helpers (draw.c Draw_CachePic / Wad pics).
+ * Shared 2D pic helpers (draw.c Draw_CachePic / Draw_Character / Wad pics).
  */
 
 const TRANSPARENT = 255;
@@ -60,3 +60,33 @@ export async function loadLmpBitmap(fs, path, palette) {
   const pic = parseQPic(data, path);
   return createImageBitmap(picToImageData(palette, pic, true));
 }
+
+/**
+ * Draw_Character — blit one glyph from 128×128 conchars sheet.
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {CanvasImageSource} conchars
+ * @param {number} x
+ * @param {number} y
+ * @param {number} num
+ */
+export function drawConChar(ctx, conchars, x, y, num) {
+  num &= 255;
+  const row = num >> 4;
+  const col = num & 15;
+  ctx.drawImage(conchars, col * 8, row * 8, 8, 8, x, y, 8, 8);
+}
+
+/**
+ * Draw_String
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {CanvasImageSource} conchars
+ * @param {number} x
+ * @param {number} y
+ * @param {string} str
+ */
+export function drawConString(ctx, conchars, x, y, str) {
+  for (let i = 0; i < str.length; i++) {
+    drawConChar(ctx, conchars, x + i * 8, y, str.charCodeAt(i));
+  }
+}
+
