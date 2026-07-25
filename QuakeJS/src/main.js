@@ -4,6 +4,7 @@
 
 import { GameLoop } from './app/GameLoop.js';
 import { Host } from './app/Host.js';
+import { SoundSystem } from './audio/SoundSystem.js';
 import { FileSystem } from './fs/FileSystem.js';
 import { createGpuContext } from './platform/GpuDevice.js';
 import { KeyboardInput } from './platform/KeyboardInput.js';
@@ -57,6 +58,8 @@ async function main() {
   const renderer = new WebGpuRenderer(gpu);
   renderer.init();
 
+  const sound = new SoundSystem(fs);
+
   const statusBar = new StatusBar(sbarCanvas);
   try {
     await statusBar.load(fs);
@@ -70,7 +73,7 @@ async function main() {
   for (const map of mapCandidates) {
     if (!fs.has(map)) continue;
     try {
-      renderer.loadMap(fs, map);
+      renderer.loadMap(fs, map, sound);
       loaded = true;
       break;
     } catch (err) {
@@ -82,7 +85,7 @@ async function main() {
     console.warn('Map load failed, using demo room:', lastErr);
   }
 
-  const host = new Host({ canvas, hud, keyboard, pointer, renderer, fs, statusBar });
+  const host = new Host({ canvas, hud, keyboard, pointer, renderer, fs, statusBar, sound });
   host.syncPointerFromCamera();
 
   const loop = new GameLoop(host);

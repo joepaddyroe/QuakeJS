@@ -52,14 +52,16 @@ export class WebGpuRenderer {
   /**
    * @param {import('../fs/FileSystem.js').FileSystem} fs
    * @param {string} [mapPath='maps/start.bsp']
+   * @param {import('../audio/SoundSystem.js').SoundSystem|null} [sound]
    */
-  loadMap(fs, mapPath = 'maps/start.bsp') {
+  loadMap(fs, mapPath = 'maps/start.bsp', sound = null) {
+    if (sound) sound.stopAll();
     const data = fs.load(mapPath);
     const palette = fs.loadPalette();
     const bsp = new BspModel(data, mapPath);
     this._worldRend.buildFromBsp(bsp, palette);
     this._aliasRend.setFilesystem(fs, palette);
-    this.server = new Server(bsp, fs, mapPath);
+    this.server = new Server(bsp, fs, mapPath, sound);
     this.collision = this.server.world;
     this.player = new PlayerMove(this.collision);
     this.mode = 'world';

@@ -53,7 +53,7 @@ If you are picking up this project with no chat history:
 5. Respect **§2–3** (SOLID + layers) before editing.
 6. After completing work, update **§12**, **§7**, and **§15 Changelog** in this file. Leave `README.md` alone unless the change is drastic for end users.
 
-**Current maturity (2026-07-25):** id1 PAK + BSP world + hull walk + stair smooth + QuakeC + brush draw/clip + changelevel + alias MDL + FP view weapon + status bar. No loopback protocol / sound yet.
+**Current maturity (2026-07-25):** id1 PAK + BSP world + hull walk + stair smooth + QuakeC + brush draw/clip + changelevel + alias MDL + FP view weapon + status bar + Web Audio SFX. No loopback protocol yet.
 
 ### Remaining tasks (priority order)
 
@@ -69,7 +69,7 @@ Use **§13** for file-level detail. Summary:
 | **P2** | QuakeC VM (`pr_exec` / edicts / builtins) | Partial — spawn/think/touch/changelevel |
 | **P2** | Physics / movement (`sv_phys`, `world`) | Partial — walk + brush clip + PUSH |
 | **P3** | View weapon, particles, status bar, menu | Partial — view weapon + sbar |
-| **P3** | Sound (DMA-style mix → Web Audio) | Not started |
+| **P3** | Sound (DMA-style mix → Web Audio) | Partial — SFX + spatialize |
 | **P4** | Saves, demos, console polish | Not started |
 | **P5** | QuakeWorld / multiplayer | Not started |
 
@@ -322,8 +322,8 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started
 - [ ] Loading plaque / intermission / finale messages
 
 ### Phase 7 — Audio
-- [ ] SFX from PAK (`sound/*.wav`) via Web Audio
-- [ ] Ambient channel / spatialization subset (`S_StartSound` parity)
+- [x] SFX from PAK (`sound/*.wav`) via Web Audio
+- [x] Ambient channel / spatialization subset (`S_StartSound` parity)
 - [ ] CD / music track stubs (optional HTMLAudio or silent)
 
 ### Phase 8 — Persistence & demos
@@ -352,7 +352,7 @@ Server / world       ███████░░░  ~65%   hull walk + pushers 
 QuakeC VM            ██████░░░░  ~55%   exec+edicts+builtins; doors/triggers on start
 Client / protocol    ░░░░░░░░░░   0%   view weapon pose via local edict stub
 UI / console/menu    ███░░░░░░░  ~30%   sbar + debug HUD; no menu/console
-Audio                ░░░░░░░░░░   0%
+Audio                ████░░░░░░  ~40%   Web Audio SFX + Quake spatialize; no DMA mix / CD
 Saves / demos        ░░░░░░░░░░   0%
 Net (non-loopback)   ░░░░░░░░░░   0%
 ```
@@ -413,7 +413,7 @@ Use this when choosing what to port next. Goal: **playable Quake 1 single-player
 | P2 | **Loopback net + SV/CL connect** | Real Quake architecture | `net/NetLoop.js`, `Client.js` · `net_loop.c`, `sv_main.c`, `cl_main.c` |
 | P3 | **Alias + view weapon** | Partial — world MDL + FP shotgun | `AliasRenderer.js` · `gl_mesh.c`, `view.c` |
 | P3 | **Status bar + menu + console** | Partial — sbar done | `ui/StatusBar.js`, `fs/WadFile.js` · `sbar.c` |
-| P3 | **Sound** | Feedback | `audio/*` · `snd_dma.c`, `snd_mix.c` |
+| P3 | **Sound** | Partial — SFX + spatialize | `audio/SoundSystem.js` · `snd_dma.c` |
 | P4 | **Particles, temp ents, sky polish** | Visual parity | `ParticleRenderer.js`, `ClientTempEnts.js` · `r_part.c`, `cl_tent.c` |
 | P4 | **Save / load / demos** | QoL | `HostCmds.js`, `ClientDemo.js` · `host_cmd.c`, `cl_demo.c` |
 | P5 | **QuakeWorld / MP** | Later | `../Quake-master/QW/` |
@@ -437,6 +437,7 @@ Use this when choosing what to port next. Goal: **playable Quake 1 single-player
 | Brush surfaces / lightmaps | `render/WorldRenderer.js` · `gl_rsurf.c` |
 | Alias / weapon model | `render/AliasRenderer.js` · `gl_mesh.c` |
 | HUD | `ui/StatusBar.js`, `fs/WadFile.js` · `sbar.c` |
+| Sound | `audio/SoundSystem.js` · `snd_dma.c`, `snd_mem.c` |
 | Menus | `ui/Menu.js` · `menu.c` |
 | Console / cvars | `ui/Console.js`, `core/Cvar.js` · `console.c`, `cvar.c` |
 | Constants / limits | `core/` · `quakedef.h`, `protocol.h` |
@@ -522,6 +523,7 @@ User supplies a legally obtained Quake `id1` directory (at least `pak0.pak`). Fi
 | 2026-07-25 | **WebGPU uniform bug:** shared `writeBuffer` before submit made every alias/brush draw use the last matrix (ents stacked on camera); fix via in-encoder `copyBufferToBuffer` |
 | 2026-07-25 | **Pusher think:** match `SV_Physics_Pusher` (`nextthink > oldltime`) so `wait=-1` doors/buttons do not instantly return; touch triggers once per frame |
 | 2026-07-25 | **Status bar:** `WadFile` + `StatusBar` from `gfx.wad`; health/armor/ammo/face + inventory strip wired to client edict stats |
+| 2026-07-25 | **Sound:** `SoundSystem` (Web Audio); `sound`/`precache_sound`/`ambientsound` builtins; Quake L/R spatialize; shotgun stub SFX |
 
 ---
 

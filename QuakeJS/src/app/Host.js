@@ -5,6 +5,7 @@
 
 import { syncCanvasSize } from '../platform/GpuDevice.js';
 import { PLAYER_MINS, PLAYER_MAXS } from '../server/PlayerMove.js';
+import { angleVectors } from '../math/QuakeMath.js';
 
 export class Host {
   /**
@@ -16,8 +17,9 @@ export class Host {
    * @param {import('../render/WebGpuRenderer.js').WebGpuRenderer} deps.renderer
    * @param {import('../fs/FileSystem.js').FileSystem} deps.fs
    * @param {import('../ui/StatusBar.js').StatusBar} [deps.statusBar]
+   * @param {import('../audio/SoundSystem.js').SoundSystem} [deps.sound]
    */
-  constructor({ canvas, hud, keyboard, pointer, renderer, fs, statusBar = null }) {
+  constructor({ canvas, hud, keyboard, pointer, renderer, fs, statusBar = null, sound = null }) {
     this._canvas = canvas;
     this._hud = hud;
     this._keyboard = keyboard;
@@ -25,11 +27,22 @@ export class Host {
     this._renderer = renderer;
     this._fs = fs;
     this._statusBar = statusBar;
+    this._sound = sound;
     this._fpsAccum = 0;
     this._fpsFrames = 0;
     this._fps = 0;
     this._noclipWasDown = false;
     this._attackWasDown = false;
+    this._soundUnlockBound = false;
+
+    if (this._sound && this._canvas) {
+      const unlock = () => {
+        void this._sound.unlock();
+      };
+      this._canvas.addEventListener('pointerdown', unlock, { once: false });
+      window.addEventListener('keydown', unlock, { once: false });
+      this._soundUnlockBound = true;
+    }
   }
 
   /**
@@ -53,7 +66,7 @@ export class Host {
       return;
     }
     console.info(`[host] loading ${path}`);
-    this._renderer.loadMap(this._fs, path);
+    this._renderer.loadMap(this._fs, path, this._sound);
     this.syncPointerFromCamera();
   }
 
@@ -174,6 +187,16 @@ export class Host {
     }
 
     this._renderer.frame(width, height, dt);
+
+    if (this._sound && worldMode && player) {
+      const eye = player.eye();
+      const { forward, right, up } = angleVectors([
+        this._pointer.pitch,
+        this._pointer.yaw,
+        0,
+      ]);
+      this._sound.update(eye, forward, right, up);
+    }
 
     if (this._statusBar) {
       const stats =

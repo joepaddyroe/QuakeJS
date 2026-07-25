@@ -104,7 +104,15 @@ export function createBuiltins(ctx) {
   builtins[7] = () => {
     RETURN_FLOAT(Math.random());
   };
-  builtins[8] = () => {}; // sound
+  builtins[8] = () => {
+    // sound(entity, channel, sample, volume, attenuation)
+    const e = G_INT(PARM(0));
+    const channel = G_FLOAT(PARM(1)) | 0;
+    const sample = G_STRING(PARM(2));
+    const volume = (G_FLOAT(PARM(3)) * 255) | 0;
+    const attenuation = G_FLOAT(PARM(4));
+    ctx.server.startSound(e, channel, sample, volume, attenuation);
+  };
   builtins[9] = () => {
     const v = G_VECTOR(PARM(0));
     const len = Math.hypot(v[0], v[1], v[2]) || 1;
@@ -203,6 +211,8 @@ export function createBuiltins(ctx) {
   };
   builtins[19] = () => {
     // precache_sound
+    const s = G_STRING(PARM(0));
+    ctx.server.precacheSound(s);
     RETURN_INT(gi()[PARM(0)]);
   };
   builtins[20] = () => {
@@ -361,7 +371,14 @@ export function createBuiltins(ctx) {
   builtins[71] = fixme;
   builtins[72] = () => {}; // cvar_set
   builtins[73] = () => {}; // centerprint
-  builtins[74] = () => {}; // ambientsound
+  builtins[74] = () => {
+    // ambientsound(pos, sample, vol, attenuation)
+    const pos = G_VECTOR(PARM(0));
+    const samp = G_STRING(PARM(1));
+    const vol = G_FLOAT(PARM(2));
+    const attenuation = G_FLOAT(PARM(3));
+    ctx.server.startAmbientSound(pos, samp, vol, attenuation);
+  };
   builtins[75] = builtins[20];
   builtins[76] = builtins[19];
   builtins[77] = () => {

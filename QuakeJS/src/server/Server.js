@@ -72,10 +72,12 @@ export class Server {
    * @param {import('../render/models/BspModel.js').BspModel} bsp
    * @param {import('../fs/FileSystem.js').FileSystem} fs
    * @param {string} mapName
+   * @param {import('../audio/SoundSystem.js').SoundSystem|null} [sound]
    */
-  constructor(bsp, fs, mapName) {
+  constructor(bsp, fs, mapName, sound = null) {
     this.bsp = bsp;
     this.fs = fs;
+    this.sound = sound;
     this.mapName = mapName.replace(/^maps\//, '').replace(/\.bsp$/i, '');
     this.world = new World(bsp);
     this.progs = new Progs(fs.load('progs.dat'));
@@ -83,6 +85,8 @@ export class Server {
     /** @type {string[]} */
     this.modelPrecache = [''];
     this.modelPrecache.push(`maps/${this.mapName}.bsp`); // index 1 = world
+    /** @type {string[]} index 0 unused like vanilla */
+    this.soundPrecache = [''];
 
     /** @type {PrExec} */
     this.exec = null;
@@ -178,6 +182,69 @@ export class Server {
     if (i >= 0) return i;
     this.modelPrecache.push(name);
     return this.modelPrecache.length - 1;
+  }
+
+  /**
+   * PF_precache_sound — register + warm-load buffer.
+   * @param {string} name
+   * @returns {number} precache index
+   */
+  precacheSound(name) {
+    if (!name) return 0;
+    let i = this.soundPrecache.indexOf(name);
+    if (i >= 0) {
+      this.sound?.precache(name);
+      return i;
+    }
+    this.soundPrecache.push(name);
+    this.sound?.precache(name);
+    return this.soundPrecache.length - 1;
+  }
+
+  /**
+   * SV_StartSound — play locally (no datagram until loopback).
+   * @param {number} ent
+   * @param {number} channel
+   * @param {string} sample
+   * @param {number} volume 0..255
+   * @param {number} attenuation
+   */
+  startSound(ent, channel, sample, volume, attenuation) {
+    if (!this.sound || !sample) return;
+    if (volume < 0 || volume > 255) return;
+    if (attenuation < 0 || attenuation > 4) return;
+    if (channel < 0 || channel > 7) return;
+
+    const known = this.soundPrecache.includes(sample);
+    if (!known) {
+      // Still play — many QC paths precache at spawn; allow late samples
+      this.precacheSound(sample);
+    }
+
+    const f = this.progs.f;
+    const edicts = this.edicts;
+    const o = edicts.getVec(ent, f.origin);
+    const mins = edicts.getVec(ent, f.mins);
+    const maxs = edicts.getVec(ent, f.maxs);
+    const origin = [
+      o[0] + 0.5 * (mins[0] + maxs[0]),
+      o[1] + 0.5 * (mins[1] + maxs[1]),
+      o[2] + 0.5 * (mins[2] + maxs[2]),
+    ];
+    this.sound.startSound(ent, channel, sample, origin, volume, attenuation);
+  }
+
+  /**
+   * Ambient loop at a fixed origin (PF_ambientsound without signon).
+   * @param {number[]|Float32Array} origin
+   * @param {string} sample
+   * @param {number} vol 0..1
+   * @param {number} attenuation
+   */
+  startAmbientSound(origin, sample, vol, attenuation) {
+    if (!this.sound || !sample) return;
+    this.precacheSound(sample);
+    this.sound.startStaticSound(sample, origin, vol, attenuation);
   }
 
   /**
@@ -1018,6 +1085,9 @@ export class Server {
    * @param {number} [damage=20]
    */
   fireHitscan(attackerEnt, eye, pitch, yaw, damage = 20) {
+    // Local stub until full W_Attack / weapon frames — Quake shotgun uses guncock
+    this.startSound(attackerEnt, 1, 'weapons/guncock.wav', 255, 1);
+
     const { forward } = angleVectors([pitch, yaw, 0]);
     const end = new Float32Array([
       eye[0] + forward[0] * 2048,
