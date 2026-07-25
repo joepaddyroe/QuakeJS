@@ -11,6 +11,7 @@ import { KeyboardInput } from './platform/KeyboardInput.js';
 import { PointerLook } from './platform/PointerLook.js';
 import { WebGpuRenderer } from './render/WebGpuRenderer.js';
 import { StatusBar } from './ui/StatusBar.js';
+import { Menu } from './ui/Menu.js';
 
 /**
  * @param {string} message
@@ -25,9 +26,10 @@ function showError(message) {
 async function main() {
   const canvas = /** @type {HTMLCanvasElement|null} */ (document.getElementById('viewport'));
   const sbarCanvas = /** @type {HTMLCanvasElement|null} */ (document.getElementById('sbar'));
+  const menuCanvas = /** @type {HTMLCanvasElement|null} */ (document.getElementById('menu'));
   const hud = document.getElementById('hud');
-  if (!canvas || !hud || !sbarCanvas) {
-    throw new Error('Missing #viewport, #sbar, or #hud');
+  if (!canvas || !hud || !sbarCanvas || !menuCanvas) {
+    throw new Error('Missing #viewport, #sbar, #menu, or #hud');
   }
 
   let gpu;
@@ -67,6 +69,32 @@ async function main() {
     console.warn('Status bar load failed:', err);
   }
 
+  /** @type {Host|null} */
+  let hostRef = null;
+
+  const menu = new Menu(menuCanvas, {
+    onNewGame: (map) => {
+      hostRef?.changeMap(map);
+    },
+    playSound: (sample) => sound.playLocal(sample),
+    getVolume: () => hostRef?.cvars.value('volume') ?? 0.7,
+    setVolume: (v) => {
+      hostRef?.cvars.set('volume', v);
+    },
+    getSensitivity: () => hostRef?.cvars.value('sensitivity') ?? 3,
+    setSensitivity: (v) => {
+      hostRef?.cvars.set('sensitivity', v);
+    },
+    onQuitNotice: () => {
+      hostRef?.con.print('Close the browser tab to quit.\n');
+    },
+  });
+  try {
+    await menu.load(fs);
+  } catch (err) {
+    console.warn('Menu load failed:', err);
+  }
+
   const mapCandidates = ['maps/start.bsp', 'maps/e1m1.bsp'];
   let loaded = false;
   let lastErr = '';
@@ -85,8 +113,20 @@ async function main() {
     console.warn('Map load failed, using demo room:', lastErr);
   }
 
-  const host = new Host({ canvas, hud, keyboard, pointer, renderer, fs, statusBar, sound });
+  const host = new Host({
+    canvas,
+    hud,
+    keyboard,
+    pointer,
+    renderer,
+    fs,
+    statusBar,
+    sound,
+    menu,
+  });
+  hostRef = host;
   host.syncPointerFromCamera();
+  menu.openMain();
 
   const loop = new GameLoop(host);
   loop.start();

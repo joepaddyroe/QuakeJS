@@ -53,7 +53,7 @@ If you are picking up this project with no chat history:
 5. Respect **§2–3** (SOLID + layers) before editing.
 6. After completing work, update **§12**, **§7**, and **§15 Changelog** in this file. Leave `README.md` alone unless the change is drastic for end users.
 
-**Current maturity (2026-07-25):** id1 PAK + BSP world + hull walk + stair smooth + QuakeC + brush draw/clip + changelevel + alias MDL + FP view weapon + status bar + Web Audio SFX + console/cvars. No loopback protocol / menu yet.
+**Current maturity (2026-07-25):** id1 PAK + BSP world + hull walk + stair smooth + QuakeC + brush draw/clip + changelevel + alias MDL + FP view weapon + status bar + Web Audio SFX + console/cvars + main menu. No loopback protocol yet.
 
 ### Remaining tasks (priority order)
 
@@ -68,7 +68,7 @@ Use **§13** for file-level detail. Summary:
 | **P2** | Loopback client ↔ server + protocol | Not started |
 | **P2** | QuakeC VM (`pr_exec` / edicts / builtins) | Partial — spawn/think/touch/changelevel |
 | **P2** | Physics / movement (`sv_phys`, `world`) | Partial — walk + brush clip + PUSH |
-| **P3** | View weapon, particles, status bar, menu | Partial — view weapon + sbar + console |
+| **P3** | View weapon, particles, status bar, menu | Partial — view weapon + sbar + console + menu |
 | **P3** | Sound (DMA-style mix → Web Audio) | Partial — SFX + spatialize |
 | **P4** | Saves, demos, console polish | Not started |
 | **P5** | QuakeWorld / multiplayer | Not started |
@@ -276,7 +276,7 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started
 - [x] `PakFile` — PAK directory and lump I/O
 - [x] `FileSystem` — search paths (`pak1` then `pak0`), `load` / `has`
 - [x] Palette load (`gfx/palette.lmp`)
-- [ ] `gfx.wad` picture lumps for 2D (later menus/console)
+- [x] `gfx.wad` picture lumps for 2D (later menus/console) — sbar + menu LMPs
 - [ ] User file picker / directory handle when fetch of `id1` fails
 
 ### Phase 2 — Models
@@ -317,7 +317,7 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started
 
 ### Phase 6 — UI / meta
 - [x] Console + cvars + commands (`cmd`, `cvar`, `console`, `keys`) — basic overlay
-- [ ] Menus (`menu.c`)
+- [x] Menus (`menu.c`) — main / singleplayer / options / help / quit
 - [x] Status bar (`sbar.c`) — health / armor / ammo / face + inventory strip
 - [ ] Loading plaque / intermission / finale messages
 
@@ -351,7 +351,7 @@ WebGPU render        ███████░░░  ~78%   world+brush+alias+vi
 Server / world       ███████░░░  ~65%   hull walk + pushers + brush clip
 QuakeC VM            ██████░░░░  ~55%   exec+edicts+builtins; doors/triggers on start
 Client / protocol    ░░░░░░░░░░   0%   view weapon pose via local edict stub
-UI / console/menu    █████░░░░░  ~50%   sbar + console/cvars/cmds; no menu
+UI / console/menu    ███████░░░  ~70%   sbar + console + main menu; no load/save UI
 Audio                ████░░░░░░  ~40%   Web Audio SFX + Quake spatialize; no DMA mix / CD
 Saves / demos        ░░░░░░░░░░   0%
 Net (non-loopback)   ░░░░░░░░░░   0%
@@ -412,7 +412,7 @@ Use this when choosing what to port next. Goal: **playable Quake 1 single-player
 | P2 | **Changelevel / map load** | Done (no intermission UI) | `Host.changeMap`, builtin #70 · `host_cmd.c` |
 | P2 | **Loopback net + SV/CL connect** | Real Quake architecture | `net/NetLoop.js`, `Client.js` · `net_loop.c`, `sv_main.c`, `cl_main.c` |
 | P3 | **Alias + view weapon** | Partial — world MDL + FP shotgun | `AliasRenderer.js` · `gl_mesh.c`, `view.c` |
-| P3 | **Status bar + menu + console** | Partial — sbar + console | `ui/StatusBar.js`, `ui/Console.js`, `core/Cvar.js`, `core/Cmd.js` · `sbar.c`, `console.c` |
+| P3 | **Status bar + menu + console** | Partial — sbar + console + menu | `ui/StatusBar.js`, `ui/Console.js`, `ui/Menu.js` · `sbar.c`, `console.c`, `menu.c` |
 | P3 | **Sound** | Partial — SFX + spatialize | `audio/SoundSystem.js` · `snd_dma.c` |
 | P4 | **Particles, temp ents, sky polish** | Visual parity | `ParticleRenderer.js`, `ClientTempEnts.js` · `r_part.c`, `cl_tent.c` |
 | P4 | **Save / load / demos** | QoL | `HostCmds.js`, `ClientDemo.js` · `host_cmd.c`, `cl_demo.c` |
@@ -438,7 +438,7 @@ Use this when choosing what to port next. Goal: **playable Quake 1 single-player
 | Alias / weapon model | `render/AliasRenderer.js` · `gl_mesh.c` |
 | HUD | `ui/StatusBar.js`, `fs/WadFile.js` · `sbar.c` |
 | Sound | `audio/SoundSystem.js` · `snd_dma.c`, `snd_mem.c` |
-| Menus | `ui/Menu.js` · `menu.c` |
+| Menus | `ui/Menu.js`, `ui/DrawPics.js` · `menu.c` |
 | Console / cvars | `ui/Console.js`, `core/Cvar.js`, `core/Cmd.js`, `ui/HostCmds.js` · `console.c`, `cvar.c`, `cmd.c` |
 | Constants / limits | `core/` · `quakedef.h`, `protocol.h` |
 
@@ -525,6 +525,7 @@ User supplies a legally obtained Quake `id1` directory (at least `pak0.pak`). Fi
 | 2026-07-25 | **Status bar:** `WadFile` + `StatusBar` from `gfx.wad`; health/armor/ammo/face + inventory strip wired to client edict stats |
 | 2026-07-25 | **Sound:** `SoundSystem` (Web Audio); `sound`/`precache_sound`/`ambientsound` builtins; Quake L/R spatialize; shotgun stub SFX |
 | 2026-07-25 | **Console:** `Cmd`/`Cvar` + DOM console (`); commands map/noclip/help/status; volume & sensitivity cvars |
+| 2026-07-25 | **Main menu:** `Menu` from gfx LMPs; Single Player → New Game; Options volume/sensitivity; Help; Quit stub |
 
 ---
 

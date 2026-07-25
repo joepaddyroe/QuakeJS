@@ -307,6 +307,23 @@ export class SoundSystem {
   }
 
   /**
+   * UI / weapon local sound (S_LocalSound) — full volume, no attenuation.
+   * @param {string} sample
+   */
+  playLocal(sample) {
+    if (!sample) return;
+    void this.unlock();
+    this.startSound(
+      this._viewEntity,
+      0,
+      sample,
+      this._listenerOrigin,
+      255,
+      0,
+    );
+  }
+
+  /**
    * S_StartSound — volume is 0..255 (SV_StartSound / PF_sound).
    * @param {number} entnum
    * @param {number} entchannel 0 = auto

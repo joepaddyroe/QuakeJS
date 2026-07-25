@@ -102,4 +102,12 @@ export function registerHostCommands({ cmd, cvars, con, host, sound }) {
     con._lines = [];
     con._logEl.textContent = '';
   });
+
+  cmd.add('togglemenu', () => {
+    host.toggleMenu();
+  });
+
+  cmd.add('menu_main', () => {
+    host.openMenu();
+  });
 }

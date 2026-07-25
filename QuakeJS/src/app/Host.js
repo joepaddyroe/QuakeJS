@@ -22,6 +22,7 @@ export class Host {
    * @param {import('../fs/FileSystem.js').FileSystem} deps.fs
    * @param {import('../ui/StatusBar.js').StatusBar} [deps.statusBar]
    * @param {import('../audio/SoundSystem.js').SoundSystem} [deps.sound]
+   * @param {import('../ui/Menu.js').Menu} [deps.menu]
    * @param {HTMLElement} [deps.consoleRoot]
    */
   constructor({
@@ -33,6 +34,7 @@ export class Host {
     fs,
     statusBar = null,
     sound = null,
+    menu = null,
     consoleRoot = document.body,
   }) {
     this._canvas = canvas;
@@ -43,6 +45,7 @@ export class Host {
     this._fs = fs;
     this._statusBar = statusBar;
     this._sound = sound;
+    this._menu = menu;
     this._fpsAccum = 0;
     this._fpsFrames = 0;
     this._fps = 0;
@@ -62,8 +65,8 @@ export class Host {
     });
 
     this._onKeyDown = (e) => {
-      // Toggle console even when closed
       if (e.code === 'Backquote') {
+        if (this._menu?.isOpen) this._menu.close();
         const wasOpen = this.con.isOpen;
         this.con.handleKey(e, (line) => this._execConsole(line));
         if (this.con.isOpen && !wasOpen) {
@@ -72,8 +75,24 @@ export class Host {
         }
         return;
       }
+
       if (this.con.isOpen) {
         this.con.handleKey(e, (line) => this._execConsole(line));
+        return;
+      }
+
+      if (this._menu) {
+        if (!this._menu.isOpen && e.code === 'Escape') {
+          e.preventDefault();
+          this._pointer.exitLock();
+          this._keyboard._down.clear();
+          this._menu.openMain();
+          return;
+        }
+        if (this._menu.isOpen) {
+          this._menu.handleKey(e);
+          return;
+        }
       }
     };
     window.addEventListener('keydown', this._onKeyDown, true);
@@ -86,7 +105,25 @@ export class Host {
       window.addEventListener('keydown', unlock, { once: false });
     }
 
-    this.con.print('Ready. ` opens console — try "map e1m1" or "help".\n');
+    this.con.print('Ready. Esc = menu, ` = console.\n');
+  }
+
+  openMenu() {
+    if (!this._menu) return;
+    this.con.close();
+    this._pointer.exitLock();
+    this._keyboard._down.clear();
+    this._menu.openMain();
+  }
+
+  toggleMenu() {
+    if (!this._menu) return;
+    if (this.con.isOpen) this.con.close();
+    if (!this._menu.isOpen) {
+      this._pointer.exitLock();
+      this._keyboard._down.clear();
+    }
+    this._menu.toggle();
   }
 
   /**
@@ -101,7 +138,6 @@ export class Host {
   }
 
   /**
-   * Vanilla: typing `cvar` prints value; `cvar val` sets.
    * @param {string[]} args
    * @returns {boolean}
    */
@@ -118,9 +154,6 @@ export class Host {
     return true;
   }
 
-  /**
-   * Sync pointer angles from spawn / camera (degrees).
-   */
   syncPointerFromCamera() {
     const cam = this._renderer.camera;
     if ('yaw' in cam && 'pitch' in cam) {
@@ -155,8 +188,9 @@ export class Host {
     const kb = this._keyboard;
     const server = this._renderer.server;
     const consoleOpen = this.con.isOpen;
+    const menuOpen = !!(this._menu && this._menu.isOpen);
+    const uiBlocking = consoleOpen || menuOpen;
 
-    // Pending changelevel from QuakeC
     if (server?.pendingMap) {
       const map = server.pendingMap;
       server.pendingMap = null;
@@ -164,12 +198,10 @@ export class Host {
       return;
     }
 
-    // Apply sensitivity cvar → pointer
     const sens = this.cvars.value('sensitivity');
     if (sens > 0) this._pointer.sensitivity = 0.04 * sens;
 
-    // Toggle noclip with N (game only)
-    const nDown = !consoleOpen && kb.isDown('KeyN');
+    const nDown = !uiBlocking && kb.isDown('KeyN');
     if (worldMode && player && nDown && !this._noclipWasDown) {
       player.noclip = !player.noclip;
     }
@@ -177,13 +209,15 @@ export class Host {
 
     const intermission = !!(server && server.isIntermission());
 
-    if (worldMode && player && !consoleOpen) {
-      // Clip against doors/walls/bossgates
+    if (worldMode && player && !uiBlocking) {
       if (server && this._renderer.collision) {
         this._renderer.collision.brushes = server.getBrushDrawList();
       }
 
-      const attack = this._pointer.attack || kb.isDown('ControlLeft') || kb.isDown('ControlRight');
+      const attack =
+        this._pointer.attack ||
+        kb.isDown('ControlLeft') ||
+        kb.isDown('ControlRight');
       const jump = kb.isDown('Space');
       const attackPressed = attack && !this._attackWasDown;
       this._attackWasDown = attack;
@@ -212,7 +246,10 @@ export class Host {
           right: kb.isDown('KeyD') || kb.isDown('ArrowRight'),
           jump,
           up: jump,
-          down: kb.isDown('ControlLeft') || kb.isDown('ControlRight') || kb.isDown('KeyC'),
+          down:
+            kb.isDown('ControlLeft') ||
+            kb.isDown('ControlRight') ||
+            kb.isDown('KeyC'),
         });
         this._pointer.yaw = player.yaw;
         this._pointer.pitch = player.pitch;
@@ -248,7 +285,7 @@ export class Host {
           }
         }
       }
-    } else if (!consoleOpen) {
+    } else if (!uiBlocking) {
       const cam = this._renderer.camera;
       cam.setAngles(
         (this._pointer.yaw * Math.PI) / 180,
@@ -260,10 +297,12 @@ export class Host {
         left: kb.isDown('KeyA') || kb.isDown('ArrowLeft'),
         right: kb.isDown('KeyD') || kb.isDown('ArrowRight'),
         up: kb.isDown('Space'),
-        down: kb.isDown('ControlLeft') || kb.isDown('ControlRight') || kb.isDown('KeyC'),
+        down:
+          kb.isDown('ControlLeft') ||
+          kb.isDown('ControlRight') ||
+          kb.isDown('KeyC'),
       });
     } else if (worldMode && player && server) {
-      // Keep server ticking while console is open (doors mid-move, etc.)
       const frameDt = Math.min(dt, 0.1);
       if (this._renderer.collision) {
         this._renderer.collision.brushes = server.getBrushDrawList();
@@ -283,9 +322,13 @@ export class Host {
       this._sound.update(eye, forward, right, up);
     }
 
+    if (this._menu) this._menu.frame(dt);
+
     if (this._statusBar) {
       const stats =
-        worldMode && server && !intermission ? server.getClientStats(1) : null;
+        worldMode && server && !intermission && !menuOpen
+          ? server.getClientStats(1)
+          : null;
       this._statusBar.draw(stats);
     }
 
@@ -295,6 +338,11 @@ export class Host {
       this._fps = this._fpsFrames / this._fpsAccum;
       this._fpsAccum = 0;
       this._fpsFrames = 0;
+    }
+
+    if (menuOpen) {
+      this._hud.textContent = '';
+      return;
     }
 
     const lockHint = this._pointer.locked
@@ -322,13 +370,13 @@ export class Host {
         `\n` +
         (intermission
           ? `Level complete — click / jump to continue\n`
-          : `WASD move   Space jump   click shoot   N noclip   \` console\n`) +
+          : `WASD move   Space jump   click shoot   Esc menu   \` console\n`) +
         `${lockHint}`;
     } else {
       this._hud.textContent =
         `QuakeJS — demo room (fallback)\n` +
         `FPS ${this._fps.toFixed(0)}\n` +
-        `\` console\n` +
+        `Esc menu   \` console\n` +
         `${lockHint}`;
     }
   }
