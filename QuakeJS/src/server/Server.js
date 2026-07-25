@@ -453,10 +453,11 @@ export class Server {
     const f = this.progs.f;
     const edicts = this.edicts;
     let movetime = frametime;
-    const nextthink = edicts.getFloat(ent, f.nextthink);
-    const ltime = edicts.getFloat(ent, f.ltime);
-    if (nextthink > 0 && nextthink < ltime + frametime) {
-      movetime = nextthink - ltime;
+    const thinktime = edicts.getFloat(ent, f.nextthink);
+    const oldltime = edicts.getFloat(ent, f.ltime);
+    // WinQuake SV_Physics_Pusher: clamp move to thinktime; past/negative nextthink → 0
+    if (thinktime < oldltime + frametime) {
+      movetime = thinktime - oldltime;
       if (movetime < 0) movetime = 0;
     }
 
@@ -464,8 +465,8 @@ export class Server {
     const move = [vel[0] * movetime, vel[1] * movetime, vel[2] * movetime];
 
     if (!move[0] && !move[1] && !move[2]) {
-      edicts.setFloat(ent, f.ltime, ltime + movetime);
-      this._pusherTryThink(ent, nextthink);
+      edicts.setFloat(ent, f.ltime, oldltime + movetime);
+      this._pusherTryThink(ent, thinktime, oldltime);
       return;
     }
 
@@ -478,7 +479,7 @@ export class Server {
       pushorig[2] + move[2],
     ]);
     edicts.linkAbs(ent);
-    edicts.setFloat(ent, f.ltime, ltime + movetime);
+    edicts.setFloat(ent, f.ltime, oldltime + movetime);
     this.world.brushes = this.getBrushDrawList();
 
     if (player && !player.noclip) {
@@ -486,7 +487,7 @@ export class Server {
       if (!ok) {
         edicts.setVec(ent, f.origin, pushorigCopy);
         edicts.linkAbs(ent);
-        edicts.setFloat(ent, f.ltime, ltime);
+        edicts.setFloat(ent, f.ltime, oldltime);
         this.world.brushes = this.getBrushDrawList();
 
         const blocked = edicts.getInt(ent, f.blocked);
@@ -505,17 +506,20 @@ export class Server {
       }
     }
 
-    this._pusherTryThink(ent, nextthink);
+    this._pusherTryThink(ent, thinktime, oldltime);
   }
 
   /**
+   * WinQuake: thinktime > oldltime && thinktime <= ltime
+   * (wait=-1 sets nextthink = ltime-1 so the return think must NOT run).
    * @param {number} ent
-   * @param {number} nextthink
+   * @param {number} thinktime nextthink captured before the move
+   * @param {number} oldltime ltime before the move
    */
-  _pusherTryThink(ent, nextthink) {
+  _pusherTryThink(ent, thinktime, oldltime) {
     const f = this.progs.f;
     const edicts = this.edicts;
-    if (nextthink > 0 && nextthink <= edicts.getFloat(ent, f.ltime)) {
+    if (thinktime > oldltime && thinktime <= edicts.getFloat(ent, f.ltime)) {
       edicts.setFloat(ent, f.nextthink, 0);
       const think = edicts.getInt(ent, f.think);
       if (think) {
@@ -1036,7 +1040,7 @@ export class Server {
   }
 
   /**
-   * Touch SOLID_TRIGGER edicts overlapping player bbox.
+   * SV_TouchLinks subset — SOLID_TRIGGER only (not SOLID_BSP buttons; those use SV_Impact).
    * @param {Float32Array|number[]} origin player origin
    * @param {Float32Array|number[]} mins
    * @param {Float32Array|number[]} maxs

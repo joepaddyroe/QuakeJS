@@ -520,6 +520,7 @@ User supplies a legally obtained Quake `id1` directory (at least `pak0.pak`). Fi
 | 2026-07-25 | **Alias MDL:** `AliasModel` + `AliasRenderer`; draw items/monsters from `getAliasDrawList` |
 | 2026-07-25 | **View weapon:** `v_shot.mdl` via client loadout stub (`SetNewParms`/`W_SetCurrentAmmo`); `drawViewModel` + camera-aligned basis |
 | 2026-07-25 | **WebGPU uniform bug:** shared `writeBuffer` before submit made every alias/brush draw use the last matrix (ents stacked on camera); fix via in-encoder `copyBufferToBuffer` |
+| 2026-07-25 | **Pusher think:** match `SV_Physics_Pusher` (`nextthink > oldltime`) so `wait=-1` doors/buttons do not instantly return; touch triggers once per frame |
 
 ---
 

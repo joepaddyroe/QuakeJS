@@ -106,11 +106,6 @@ export class Host {
         });
         server.runClientThink(1, { attack, jump });
         server.applyClientEdict(1, player);
-        // Open walk-up doors as soon as we enter their fat trigger (before move)
-        if (!intermission) {
-          server.touchTriggers(player.origin, PLAYER_MINS, PLAYER_MAXS, 1);
-          server.applyClientEdict(1, player);
-        }
       }
 
       if (!intermission) {
@@ -131,6 +126,7 @@ export class Host {
       if (server) {
         const frameDt = Math.min(dt, 0.1);
         if (!intermission) {
+          // SV_Impact on brush bumps (func_button SOLID_BSP touch)
           server.impactTouches(1, player.impactedEdicts);
           server.bumpOpenDoors(1, player.impactedEdicts);
           if (attackPressed) {
@@ -150,6 +146,7 @@ export class Host {
             onground: player.onground,
             groundEntity: player.groundEntity,
           });
+          // SV_LinkEdict(..., true) — touch SOLID_TRIGGER once after move (not twice)
           server.touchTriggers(player.origin, PLAYER_MINS, PLAYER_MAXS, 1);
           const applied = server.applyClientEdict(1, player);
           if (applied.fixangle) {
