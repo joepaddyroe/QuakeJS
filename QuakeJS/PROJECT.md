@@ -53,7 +53,7 @@ If you are picking up this project with no chat history:
 5. Respect **§2–3** (SOLID + layers) before editing.
 6. After completing work, update **§12**, **§7**, and **§15 Changelog** in this file. Leave `README.md` alone unless the change is drastic for end users.
 
-**Current maturity (2026-07-25):** id1 PAK + BSP world + hull walk + stair smooth + QuakeC + brush draw/clip + changelevel + alias MDL + sprites + lightstyles + FP shotgun (fire anim) + particles + status bar + Web Audio SFX + console/cvars + main menu + loading/intermission overlays. No loopback protocol yet.
+**Current maturity (2026-07-25):** id1 PAK + BSP world + hull walk + stair smooth + QuakeC + brush draw/clip + changelevel + alias MDL + sprites + lightstyles + dynamic lights + FP shotgun (fire anim) + particles + status bar + Web Audio SFX + console/cvars + main menu + loading/intermission overlays. No loopback protocol yet.
 
 ### Remaining tasks (priority order)
 
@@ -293,7 +293,7 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started
 - [x] Particles (gunshot / blood via `R_RunParticleEffect` subset)
 - [x] Sprites (SPR load + billboard draw; QW-style explosion temps)
 - [x] Lightstyles (`R_AnimateLight` + multi-layer lightmaps)
-- [ ] Dynamic lights (muzzle / rocket dlights)
+- [x] Dynamic lights (muzzle flash / explosion dlights into lightmaps)
 - [ ] 2D draw (`Draw_Pic`, console background)
 - [ ] Frustum cull on BSP nodes (`R_CullBox`)
 
@@ -349,7 +349,7 @@ Last audited: **2026-07-25** against `Quake-master/WinQuake`. Re-audit after maj
 Host / frame         ████░░░░░░  ~40%   rAF Host.frame; server physics + trigger touch
 Filesystem (PAK)     ████████░░  ~80%   pak0+pak1; no loose files / -path
 Models (BSP/MDL/SPR) ██████░░░░  ~65%   BSP+alias MDL; no SPR
-WebGPU render        ████████░░  ~88%   world+brush+alias+sprites+lightstyles+view weapon+particles; no frustum / dlights
+WebGPU render        █████████░  ~90%   world+brush+alias+sprites+lightstyles+dlights+view weapon+particles; no frustum
 Server / world       ███████░░░  ~65%   hull walk + pushers + brush clip
 QuakeC VM            ██████░░░░  ~55%   exec+edicts+builtins; doors/triggers on start
 Client / protocol    ░░░░░░░░░░   0%   view weapon pose via local edict stub
@@ -416,7 +416,7 @@ Use this when choosing what to port next. Goal: **playable Quake 1 single-player
 | P3 | **Alias + view weapon** | Partial — FP shotgun + fire frames | `AliasRenderer.js`, `Server.playerAttack` · `gl_mesh.c`, `view.c` |
 | P3 | **Status bar + menu + console** | Partial — sbar + console + menu + overlays | `ui/*` · `sbar.c`, `console.c`, `menu.c`, `screen.c` |
 | P3 | **Sound** | Partial — SFX + spatialize | `audio/SoundSystem.js` · `snd_dma.c` |
-| P4 | **Particles, temp ents, sky polish** | Partial — particles + sprites + lightstyles | `ParticleSystem.js`, `SpriteRenderer.js`, `LightStyles.js` · `r_part.c`, `cl_tent.c`, `r_light.c` |
+| P4 | **Particles, temp ents, sky polish** | Partial — particles + sprites + lightstyles + dlights | `ParticleSystem.js`, `SpriteRenderer.js`, `LightStyles.js`, `DynamicLights.js` |
 | P4 | **Save / load / demos** | QoL | `HostCmds.js`, `ClientDemo.js` · `host_cmd.c`, `cl_demo.c` |
 | P5 | **QuakeWorld / MP** | Later | `../Quake-master/QW/` |
 
@@ -440,6 +440,7 @@ Use this when choosing what to port next. Goal: **playable Quake 1 single-player
 | Alias / weapon model | `render/AliasRenderer.js` · `gl_mesh.c` |
 | Sprites | `render/SpriteRenderer.js`, `models/SpriteModel.js` · `r_sprite.c`, `gl_rmain.c` |
 | Lightstyles | `render/LightStyles.js`, `WorldRenderer.js` · `r_light.c`, `gl_rsurf.c` |
+| Dynamic lights | `render/DynamicLights.js`, `WorldRenderer.js` · `cl_main.c`, `gl_rlight.c` |
 | Particles | `render/ParticleSystem.js` · `r_part.c` |
 | HUD | `ui/StatusBar.js`, `ui/ScreenOverlay.js`, `fs/WadFile.js` · `sbar.c`, `screen.c` |
 | Sound | `audio/SoundSystem.js` · `snd_dma.c`, `snd_mem.c` |
@@ -536,6 +537,7 @@ User supplies a legally obtained Quake `id1` directory (at least `pak0.pak`). Fi
 | 2026-07-25 | **Particles:** `ParticleSystem` (`R_RunParticleEffect` subset); gunshot sparks / blood on hitscan; QC `particle` builtin |
 | 2026-07-25 | **Sprites:** SPR loader + billboard draw; entity `.spr` list; QW-style `s_explod` temps via Write*/`svc_temp_entity` |
 | 2026-07-25 | **Lightstyles:** `LightStyles` + `R_AnimateLight`; multi-style lightmap rebuild; QC `lightstyle` builtin |
+| 2026-07-25 | **Dynamic lights:** `DynamicLights` pool; muzzle flash + TE_EXPLOSION; `R_MarkLights` / `R_AddDynamicLights` into lightmaps |
 
 ---
 

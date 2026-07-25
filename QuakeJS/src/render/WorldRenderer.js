@@ -5,6 +5,7 @@
 
 import { mat4LookAt, mat4Multiply, mat4Perspective, mat4Translate } from '../math/Mat4.js';
 import { LightStyles } from './LightStyles.js';
+import { MAX_DLIGHTS } from './DynamicLights.js';
 
 const BLOCK_WIDTH = 128;
 const BLOCK_HEIGHT = 128;
@@ -301,11 +302,19 @@ export class WorldRenderer {
      *   tmax: number,
      *   styles: number[],
      *   cached: number[],
+     *   dlightbits: number,
+     *   cachedDlight: boolean,
      * }[]}
      */
     this._lmSurfaces = [];
+    /** @type {Map<number, (typeof this._lmSurfaces)[0]>} */
+    this._lmByFace = new Map();
     /** @type {LightStyles|null} */
     this._lightStyles = null;
+    /** @type {import('./DynamicLights.js').DynamicLights|null} */
+    this._dlights = null;
+    this._dlightFrame = 0;
+    this._lastLmTime = 0;
     this._skySolidTex = null;
     this._skyAlphaTex = null;
     this._skySolidBg = null;
@@ -328,6 +337,13 @@ export class WorldRenderer {
    */
   setLightStyles(styles) {
     this._lightStyles = styles;
+  }
+
+  /**
+   * @param {import('./DynamicLights.js').DynamicLights} dlights
+   */
+  setDynamicLights(dlights) {
+    this._dlights = dlights;
   }
 
   initPipeline() {
@@ -510,6 +526,7 @@ export class WorldRenderer {
     this._bsp = bsp;
     this.mapName = bsp.name;
     this._lmSurfaces = [];
+    this._lmByFace = new Map();
     const device = this._device;
     if (!bsp.submodels.length) throw new Error('BSP has no submodels');
 
@@ -617,7 +634,10 @@ export class WorldRenderer {
             tmax,
             styles: face.styles.slice(),
             cached,
+            dlightbits: 0,
+            cachedDlight: false,
           });
+          this._lmByFace.set(fi, this._lmSurfaces[this._lmSurfaces.length - 1]);
 
           const key = `${ti.miptex}:${face.lightmapIndex}`;
           if (!solidBgCache.has(key)) solidBgCache.set(key, null);
@@ -809,7 +829,7 @@ export class WorldRenderer {
   }
 
   /**
-   * Build one lightmap block (R_BuildLightMap subset — styles only, no dlights).
+   * Build one lightmap block (R_BuildLightMap subset — styles + dlights).
    * @param {import('./models/BspModel.js').BspModel} bsp
    * @param {import('./models/BspModel.js').BspFace} face
    * @param {Uint8Array|null} page full atlas page, or null to skip
@@ -819,8 +839,22 @@ export class WorldRenderer {
    * @param {number} tmax
    * @param {Int32Array|null} [styleValues]
    * @param {Uint8Array|null} [outRect] optional smax*tmax*4 buffer for GPU upload
+   * @param {import('./DynamicLights.js').Dlight[]|null} [dlights]
+   * @param {number} [dlightbits]
    */
-  _fillLightmap(bsp, face, page, lx, ly, smax, tmax, styleValues = null, outRect = null) {
+  _fillLightmap(
+    bsp,
+    face,
+    page,
+    lx,
+    ly,
+    smax,
+    tmax,
+    styleValues = null,
+    outRect = null,
+    dlights = null,
+    dlightbits = 0,
+  ) {
     const size = smax * tmax;
     const blocklights = new Uint32Array(size);
     if (bsp.lightdata && face.lightofs !== -1 && face.styles[0] !== 255) {
@@ -836,6 +870,11 @@ export class WorldRenderer {
     } else {
       blocklights.fill(255 * 256);
     }
+
+    if (dlights && dlightbits) {
+      this._addDynamicLights(bsp, face, blocklights, smax, tmax, dlights, dlightbits);
+    }
+
     for (let t = 0; t < tmax; t++) {
       for (let s = 0; s < smax; s++) {
         let val = blocklights[t * smax + s] >> 7;
@@ -859,6 +898,112 @@ export class WorldRenderer {
   }
 
   /**
+   * R_AddDynamicLights — add marked dlights into blocklights (8.8).
+   * @param {import('./models/BspModel.js').BspModel} bsp
+   * @param {import('./models/BspModel.js').BspFace} face
+   * @param {Uint32Array} blocklights
+   * @param {number} smax
+   * @param {number} tmax
+   * @param {import('./DynamicLights.js').Dlight[]} dlights indexed by bit
+   * @param {number} dlightbits
+   */
+  _addDynamicLights(bsp, face, blocklights, smax, tmax, dlights, dlightbits) {
+    const plane = bsp.planes[face.planenum];
+    if (!plane) return;
+    let nx = plane.normal[0];
+    let ny = plane.normal[1];
+    let nz = plane.normal[2];
+    let pdist = plane.dist;
+    if (face.planeBack) {
+      nx = -nx;
+      ny = -ny;
+      nz = -nz;
+      pdist = -pdist;
+    }
+    const ti = bsp.texinfo[face.texinfo];
+    if (!ti) return;
+    const v0 = ti.vecs;
+
+    for (let lnum = 0; lnum < MAX_DLIGHTS; lnum++) {
+      if (!(dlightbits & (1 << lnum))) continue;
+      const dl = dlights[lnum];
+      if (!dl || !dl.radius) continue;
+
+      let rad = dl.radius;
+      const dist =
+        dl.origin[0] * nx + dl.origin[1] * ny + dl.origin[2] * nz - pdist;
+      rad -= Math.abs(dist);
+      let minlight = dl.minlight;
+      if (rad < minlight) continue;
+      minlight = rad - minlight;
+
+      const impactX = dl.origin[0] - nx * dist;
+      const impactY = dl.origin[1] - ny * dist;
+      const impactZ = dl.origin[2] - nz * dist;
+
+      let local0 =
+        impactX * v0[0] + impactY * v0[1] + impactZ * v0[2] + v0[3];
+      let local1 =
+        impactX * v0[4] + impactY * v0[5] + impactZ * v0[6] + v0[7];
+      local0 -= face.texturemins[0];
+      local1 -= face.texturemins[1];
+
+      for (let t = 0; t < tmax; t++) {
+        let td = (local1 - t * 16) | 0;
+        if (td < 0) td = -td;
+        for (let s = 0; s < smax; s++) {
+          let sd = (local0 - s * 16) | 0;
+          if (sd < 0) sd = -sd;
+          let d;
+          if (sd > td) d = sd + (td >> 1);
+          else d = td + (sd >> 1);
+          if (d < minlight) {
+            blocklights[t * smax + s] += ((rad - d) * 256) | 0;
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * R_MarkLights — mark lightmap surfaces near a dlight via BSP walk.
+   * @param {import('./models/BspModel.js').BspModel} bsp
+   * @param {import('./DynamicLights.js').Dlight} light
+   * @param {number} bit
+   * @param {number} nodeIndex
+   */
+  _markLights(bsp, light, bit, nodeIndex) {
+    if (nodeIndex < 0) return;
+    const node = bsp.nodes[nodeIndex];
+    if (!node || node.contents < 0) return;
+    const plane = bsp.planes[node.planenum];
+    const dist =
+      light.origin[0] * plane.normal[0] +
+      light.origin[1] * plane.normal[1] +
+      light.origin[2] * plane.normal[2] -
+      plane.dist;
+
+    if (dist > light.radius) {
+      this._markLights(bsp, light, bit, node.children[0]);
+      return;
+    }
+    if (dist < -light.radius) {
+      this._markLights(bsp, light, bit, node.children[1]);
+      return;
+    }
+
+    for (let i = 0; i < node.numfaces; i++) {
+      const fi = node.firstface + i;
+      const surf = this._lmByFace.get(fi);
+      if (!surf) continue;
+      surf.dlightbits |= bit;
+    }
+
+    this._markLights(bsp, light, bit, node.children[0]);
+    this._markLights(bsp, light, bit, node.children[1]);
+  }
+
+  /**
    * Force lightmap rebuild on next frame (after PF_lightstyle at spawn).
    */
   invalidateLightmapCache() {
@@ -867,31 +1012,53 @@ export class WorldRenderer {
       surf.cached[1] = -1;
       surf.cached[2] = -1;
       surf.cached[3] = -1;
+      surf.cachedDlight = true;
     }
   }
 
   /**
-   * R_AnimateLight + rebuild dirty lightmap blocks.
+   * R_AnimateLight + R_PushDlights + rebuild dirty lightmap blocks.
    * @param {number} time
    */
   updateLightmaps(time) {
-    if (!this._lightStyles || !this._bsp || !this._lmSurfaces.length) return;
-    this._lightStyles.animate(time);
-    const values = this._lightStyles.values;
+    if (!this._bsp || !this._lmSurfaces.length) return;
+    const dt = Math.min(0.1, Math.max(0, time - this._lastLmTime));
+    this._lastLmTime = time;
+
+    if (this._lightStyles) this._lightStyles.animate(time);
+    const values = this._lightStyles?.values ?? null;
+
     const bsp = this._bsp;
+    /** @type {import('./DynamicLights.js').Dlight[]} */
+    const lightPool = this._dlights ? this._dlights.lights : [];
+
+    if (this._dlights) {
+      this._dlights.decay(time, dt);
+      for (const surf of this._lmSurfaces) surf.dlightbits = 0;
+      for (let i = 0; i < MAX_DLIGHTS; i++) {
+        const dl = lightPool[i];
+        if (!dl || dl.die < time || !dl.radius) continue;
+        this._markLights(bsp, dl, 1 << i, 0);
+      }
+    }
+
     let scratch = null;
     let scratchSize = 0;
 
     for (const surf of this._lmSurfaces) {
       let dirty = false;
-      for (let m = 0; m < 4; m++) {
-        const st = surf.styles[m];
-        if (st === 255) break;
-        if (values[st] !== surf.cached[m]) {
-          dirty = true;
-          break;
+      if (values) {
+        for (let m = 0; m < 4; m++) {
+          const st = surf.styles[m];
+          if (st === 255) break;
+          if (values[st] !== surf.cached[m]) {
+            dirty = true;
+            break;
+          }
         }
       }
+      const hasDl = surf.dlightbits !== 0;
+      if (hasDl || surf.cachedDlight) dirty = true;
       if (!dirty) continue;
 
       const face = bsp.faces[surf.faceIndex];
@@ -910,6 +1077,8 @@ export class WorldRenderer {
         surf.tmax,
         values,
         scratch,
+        lightPool,
+        surf.dlightbits,
       );
       const tex = this._gpuLightmaps[surf.texnum];
       if (tex) {
@@ -920,11 +1089,14 @@ export class WorldRenderer {
           { width: surf.smax, height: surf.tmax },
         );
       }
-      for (let m = 0; m < 4; m++) {
-        const st = surf.styles[m];
-        if (st === 255) break;
-        surf.cached[m] = values[st];
+      if (values) {
+        for (let m = 0; m < 4; m++) {
+          const st = surf.styles[m];
+          if (st === 255) break;
+          surf.cached[m] = values[st];
+        }
       }
+      surf.cachedDlight = hasDl;
     }
   }
 
@@ -1170,6 +1342,7 @@ export class WorldRenderer {
     for (const t of this._gpuLightmaps) t.destroy();
     this._gpuLightmaps = [];
     this._lmSurfaces = [];
+    this._lmByFace = new Map();
     this._skySolidTex?.destroy();
     this._skyAlphaTex?.destroy();
     this._skySolidTex = this._skyAlphaTex = null;

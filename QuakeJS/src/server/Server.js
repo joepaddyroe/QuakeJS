@@ -84,6 +84,8 @@ export class Server {
     this.lightStyles.clear();
     /** @type {import('../render/ParticleSystem.js').ParticleSystem|null} */
     this.particles = null;
+    /** @type {import('../render/DynamicLights.js').DynamicLights|null} */
+    this.dlights = null;
     /**
      * Client temp-entity hook (TE_EXPLOSION sprites, etc.).
      * @type {((te: number, pos: Float32Array) => void)|null}
@@ -125,6 +127,8 @@ export class Server {
     );
 
     this.time = 1.0;
+    /** Realtime for dlights (synced from renderer each frame). */
+    this.clientTime = 0;
     this._clientLoadoutReady = false;
     this.edicts.time = this.time;
     /** @type {string|null} */
@@ -424,6 +428,7 @@ export class Server {
 
     if (te === TE_EXPLOSION || te === TE_TAREXPLOSION) {
       this.particles?.explosion(pos);
+      this.dlights?.explosion(pos, this.clientTime);
       this.onTempEntity?.(te, pos);
       if (this.sound) {
         this.precacheSound('weapons/r_exp3.wav');
@@ -1353,6 +1358,9 @@ export class Server {
     if (af >= 0) edicts.setFloat(attackerEnt, af, this.time + 0.5);
 
     this.startSound(attackerEnt, 1, 'weapons/guncock.wav', 255, 1);
+    if (this.dlights) {
+      this.dlights.muzzleFlash(eye, pitch, yaw, this.clientTime, attackerEnt);
+    }
     this.fireHitscan(attackerEnt, eye, pitch, yaw, 20);
     return true;
   }

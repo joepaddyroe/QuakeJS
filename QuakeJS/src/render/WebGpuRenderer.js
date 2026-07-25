@@ -9,6 +9,7 @@ import { AliasRenderer } from './AliasRenderer.js';
 import { SpriteRenderer } from './SpriteRenderer.js';
 import { ParticleSystem } from './ParticleSystem.js';
 import { LightStyles } from './LightStyles.js';
+import { DynamicLights } from './DynamicLights.js';
 import { BspModel } from './models/BspModel.js';
 import { PlayerMove } from '../server/PlayerMove.js';
 import { Server } from '../server/Server.js';
@@ -25,7 +26,9 @@ export class WebGpuRenderer {
     this._spriteRend = new SpriteRenderer(gpu.device, gpu.presentationFormat);
     this._particles = new ParticleSystem(gpu.device, gpu.presentationFormat);
     this._lightStyles = new LightStyles();
+    this._dlights = new DynamicLights();
     this._worldRend.setLightStyles(this._lightStyles);
+    this._worldRend.setDynamicLights(this._dlights);
     this._demoCamera = new FlyCamera();
     /** @type {PlayerMove|null} */
     this.player = null;
@@ -73,6 +76,7 @@ export class WebGpuRenderer {
     if (sound) sound.stopAll();
     this._particles.clear();
     this._spriteRend.clear();
+    this._dlights.clear();
     const data = fs.load(mapPath);
     const palette = fs.loadPalette();
     this._particles.setPalette(palette);
@@ -82,6 +86,7 @@ export class WebGpuRenderer {
     this._spriteRend.setFilesystem(fs, palette);
     this.server = new Server(bsp, fs, mapPath, sound, this._lightStyles);
     this.server.particles = this._particles;
+    this.server.dlights = this._dlights;
     this.server.onTempEntity = (te, pos) => {
       if (te === 3 || te === 4) this._spriteRend.spawnExplosion(pos);
     };
@@ -119,6 +124,7 @@ export class WebGpuRenderer {
     const colorView = context.getCurrentTexture().createView();
     const encoder = device.createCommandEncoder();
     if (this.mode === 'world' && this.player) {
+      if (this.server) this.server.clientTime = this._time;
       this._particles.update(dt);
       const brushes = this.server ? this.server.getBrushDrawList() : [];
       const aliases = this.server ? this.server.getAliasDrawList() : [];
