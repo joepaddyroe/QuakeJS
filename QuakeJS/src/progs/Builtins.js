@@ -8,6 +8,9 @@ import {
   SOLID_BSP,
   SOLID_TRIGGER,
   FL_ONGROUND,
+  FL_FLY,
+  FL_SWIM,
+  FL_NOTARGET,
   FL_ITEM,
   MOVETYPE_PUSH,
   MAX_CLIENTS,
@@ -202,13 +205,40 @@ export function createBuiltins(ctx) {
     void tr;
   };
   builtins[17] = () => {
-    // checkclient — prefer local player if alive
-    const f = progs.f;
-    if (!edicts.free[1] && edicts.getFloat(1, f.health) > 0) {
-      RETURN_INT(1);
+    // PF_checkclient — client only if in monster's view of client PVS
+    const player = 1;
+    if (edicts.free[player] || (edicts.getFloat(player, f.health) | 0) <= 0) {
+      RETURN_INT(0);
       return;
     }
-    RETURN_INT(0);
+    if ((edicts.getFloat(player, f.flags) | 0) & FL_NOTARGET) {
+      RETURN_INT(0);
+      return;
+    }
+    const bsp = ctx.server.bsp;
+    if (!bsp) {
+      RETURN_INT(0);
+      return;
+    }
+    // PVS is taken from the client (vanilla PF_newcheckclient)
+    const po = edicts.getVec(player, f.origin);
+    const pvo = edicts.getVec(player, f.view_ofs);
+    const peye = [po[0] + pvo[0], po[1] + pvo[1], po[2] + pvo[2]];
+    const playerLeaf = bsp.pointInLeaf(peye);
+    const pvs = Uint8Array.from(bsp.leafPVS(playerLeaf));
+
+    const self = G_INT(ofs.self);
+    const so = edicts.getVec(self, f.origin);
+    const svo = edicts.getVec(self, f.view_ofs);
+    const eye = [so[0] + svo[0], so[1] + svo[1], so[2] + svo[2]];
+    const selfLeaf = bsp.pointInLeaf(eye);
+    // leafs[0] solid; PVS bit i ↔ leafs[i+1]
+    const bit = selfLeaf - 1;
+    if (bit < 0 || !(pvs[bit >> 3] & (1 << (bit & 7)))) {
+      RETURN_INT(0);
+      return;
+    }
+    RETURN_INT(player);
   }; // checkclient
   builtins[18] = () => {
     // find(start, fieldOfs, match)
@@ -271,8 +301,13 @@ export function createBuiltins(ctx) {
   builtins[30] = () => {}; // traceoff
   builtins[31] = () => {}; // eprint
   builtins[32] = () => {
-    // walkmove(yaw, dist) — PF_walkmove subset
+    // walkmove(yaw, dist) — PF_walkmove / SV_movestep subset
     const self = G_INT(ofs.self);
+    const flags = edicts.getFloat(self, f.flags) | 0;
+    if (!(flags & (FL_ONGROUND | FL_FLY | FL_SWIM))) {
+      RETURN_FLOAT(0);
+      return;
+    }
     const yaw = (G_FLOAT(PARM(0)) * Math.PI) / 180;
     const dist = G_FLOAT(PARM(1));
     const o = edicts.getVec(self, f.origin);
@@ -283,19 +318,21 @@ export function createBuiltins(ctx) {
     ]);
     const mins = new Float32Array(edicts.getVec(self, f.mins));
     const maxs = new Float32Array(edicts.getVec(self, f.maxs));
-    const tr = ctx.server.world.playerMove(o, end, mins, maxs);
-    if (tr.allsolid || tr.startsolid || tr.fraction === 0) {
+    // Step up then down (SV_movestep STEPSIZE=18 subset)
+    const STEP = 18;
+    const raised = new Float32Array([end[0], end[1], end[2] + STEP]);
+    const down = new Float32Array([end[0], end[1], end[2] - STEP]);
+    const trUp = ctx.server.world.playerMove(o, raised, mins, maxs);
+    const start = trUp.fraction < 1 && !trUp.allsolid ? trUp.endpos : raised;
+    const tr = ctx.server.world.playerMove(start, down, mins, maxs);
+    if (tr.allsolid || tr.startsolid || tr.fraction === 1) {
       RETURN_FLOAT(0);
       return;
     }
     edicts.setVec(self, f.origin, tr.endpos);
     edicts.linkAbs(self);
-    if (tr.fraction === 1 || tr.plane.normal[2] > 0.7) {
-      edicts.setFloat(
-        self,
-        f.flags,
-        (edicts.getFloat(self, f.flags) | 0) | FL_ONGROUND,
-      );
+    if (tr.plane.normal[2] > 0.7) {
+      edicts.setFloat(self, f.flags, flags | FL_ONGROUND);
     }
     RETURN_FLOAT(1);
   }; // walkmove
@@ -433,40 +470,98 @@ export function createBuiltins(ctx) {
   };
   for (let i = 60; i <= 66; i++) builtins[i] = () => {};
   builtins[67] = () => {
-    // movetogoal(dist) — step toward enemy / goalentity
+    // SV_MoveToGoal — step toward goalentity; stop when CloseEnough
     const self = G_INT(ofs.self);
     const dist = G_FLOAT(PARM(0));
-    const enemyOfs = progs.fieldByName.get('enemy')?.ofs;
-    const goalOfs = progs.fieldByName.get('goalentity')?.ofs;
-    let target = 0;
-    if (enemyOfs != null) target = edicts.getInt(self, enemyOfs) | 0;
-    if (!target && goalOfs != null) target = edicts.getInt(self, goalOfs) | 0;
-    if (!target || edicts.free[target]) {
+    const flags = edicts.getFloat(self, f.flags) | 0;
+    if (!(flags & (FL_ONGROUND | FL_FLY | FL_SWIM))) {
       RETURN_FLOAT(0);
       return;
     }
+    const goalOfs = progs.fieldByName.get('goalentity')?.ofs;
+    const enemyOfs = progs.fieldByName.get('enemy')?.ofs;
+    let goal = goalOfs != null ? edicts.getInt(self, goalOfs) | 0 : 0;
+    const enemy = enemyOfs != null ? edicts.getInt(self, enemyOfs) | 0 : 0;
+    if (!goal || edicts.free[goal]) goal = enemy;
+    if (!goal || edicts.free[goal]) {
+      RETURN_FLOAT(0);
+      return;
+    }
+
+    // SV_CloseEnough — next step would hit goal → don't walk (QC attacks)
+    const amax = edicts.getVec(self, f.absmax);
+    const amin = edicts.getVec(self, f.absmin);
+    const gmax = edicts.getVec(goal, f.absmax);
+    const gmin = edicts.getVec(goal, f.absmin);
+    let close = true;
+    for (let i = 0; i < 3; i++) {
+      if (gmin[i] > amax[i] + dist || gmax[i] < amin[i] - dist) {
+        close = false;
+        break;
+      }
+    }
+    if (close) {
+      RETURN_FLOAT(1);
+      return;
+    }
+
     const o = edicts.getVec(self, f.origin);
-    const t = edicts.getVec(target, f.origin);
+    const t = edicts.getVec(goal, f.origin);
     const dx = t[0] - o[0];
     const dy = t[1] - o[1];
     const len = Math.hypot(dx, dy) || 1;
-    const yaw = (Math.atan2(dy, dx) * 180) / Math.PI;
+    let yaw = (Math.atan2(dy, dx) * 180) / Math.PI;
+    const idealOfs = progs.fieldByName.get('ideal_yaw')?.ofs;
+    if (idealOfs != null) edicts.setFloat(self, idealOfs, yaw);
     edicts.setVec(self, f.angles, [0, yaw, 0]);
-    // Reuse walkmove path
+
+    const rad = (yaw * Math.PI) / 180;
     const end = new Float32Array([
-      o[0] + (dx / len) * dist,
-      o[1] + (dy / len) * dist,
+      o[0] + Math.cos(rad) * dist,
+      o[1] + Math.sin(rad) * dist,
       o[2],
     ]);
     const mins = new Float32Array(edicts.getVec(self, f.mins));
     const maxs = new Float32Array(edicts.getVec(self, f.maxs));
-    const tr = ctx.server.world.playerMove(o, end, mins, maxs);
-    if (tr.allsolid || tr.fraction === 0) {
-      RETURN_FLOAT(0);
-      return;
+    const STEP = 18;
+    const raised = new Float32Array([end[0], end[1], end[2] + STEP]);
+    const down = new Float32Array([end[0], end[1], end[2] - STEP]);
+    const trUp = ctx.server.world.playerMove(o, raised, mins, maxs);
+    const start = !trUp.allsolid ? trUp.endpos : raised;
+    const tr = ctx.server.world.playerMove(start, down, mins, maxs);
+    if (tr.allsolid || tr.startsolid || tr.fraction === 1) {
+      // Blocked / cliff — try a random side step (SV_NewChaseDir lite)
+      const side = (Math.random() < 0.5 ? 1 : -1) * 90;
+      const syaw = ((yaw + side) * Math.PI) / 180;
+      const sideEnd = new Float32Array([
+        o[0] + Math.cos(syaw) * dist,
+        o[1] + Math.sin(syaw) * dist,
+        o[2],
+      ]);
+      const sideRaised = new Float32Array([
+        sideEnd[0],
+        sideEnd[1],
+        sideEnd[2] + STEP,
+      ]);
+      const sideDown = new Float32Array([
+        sideEnd[0],
+        sideEnd[1],
+        sideEnd[2] - STEP,
+      ]);
+      const su = ctx.server.world.playerMove(o, sideRaised, mins, maxs);
+      const ss = !su.allsolid ? su.endpos : sideRaised;
+      const st = ctx.server.world.playerMove(ss, sideDown, mins, maxs);
+      if (st.allsolid || st.startsolid || st.fraction === 1) {
+        RETURN_FLOAT(0);
+        return;
+      }
+      edicts.setVec(self, f.origin, st.endpos);
+      if (idealOfs != null) edicts.setFloat(self, idealOfs, yaw + side);
+    } else {
+      edicts.setVec(self, f.origin, tr.endpos);
     }
-    edicts.setVec(self, f.origin, tr.endpos);
     edicts.linkAbs(self);
+    edicts.setFloat(self, f.flags, (edicts.getFloat(self, f.flags) | 0) | FL_ONGROUND);
     RETURN_FLOAT(1);
   }; // movetogoal
   builtins[68] = () => {

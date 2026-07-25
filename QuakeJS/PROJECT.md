@@ -53,7 +53,7 @@ If you are picking up this project with no chat history:
 5. Respect **§2–3** (SOLID + layers) before editing.
 6. After completing work, update **§12**, **§7**, and **§15 Changelog** in this file. Leave `README.md` alone unless the change is drastic for end users.
 
-**Current maturity (2026-07-26):** id1 SP slice through Phase 5 — loopback protocol (clc_move, clientdata, baselines, entity updates), QC PutClientInServer, walkmove/movetogoal, view bob/punch/roll. Phase 8 saves/demos and Phase 9 MP still open.
+**Current maturity (2026-07-26):** id1 SP through Phase 8 — save/load `.sav`, demo record/play, `config.cfg` in localStorage. Phase 9 MP still open.
 
 ### Remaining tasks (priority order)
 
@@ -70,7 +70,7 @@ Use **§13** for file-level detail. Summary:
 | **P2** | Physics / movement (`sv_phys`, `world`) | Partial — walk + brush clip + PUSH (local PlayerMove) |
 | **P3** | View weapon, particles, status bar, menu | Partial — shotgun + particles + sprites + sbar + conback + centerprint |
 | **P3** | Sound (DMA-style mix → Web Audio) | Partial — SFX + spatialize + CD stub |
-| **P4** | Saves, demos, console polish | Not started |
+| **P4** | Saves, demos, console polish | Done — save/load + demos + config.cfg |
 | **P5** | QuakeWorld / multiplayer | Not started |
 
 ---
@@ -331,9 +331,9 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started
 - [x] CD / music track stubs (optional HTMLAudio or silent)
 
 ### Phase 8 — Persistence & demos
-- [ ] Save / load (`Host_Savegame` / `Host_Loadgame` — Quake text save format)
-- [ ] Demo record / playback (`cl_demo.c`)
-- [ ] Config / `autoexec.cfg` / `config.cfg` in `localStorage` or File System Access API
+- [x] Save / load (`Host_Savegame` / `Host_Loadgame` — Quake text save format via localStorage)
+- [x] Demo record / playback (`cl_demo.c` subset — record frames; playdemo freezes sim)
+- [x] Config / `autoexec.cfg` / `config.cfg` in `localStorage`
 
 ### Phase 9 — Multiplayer (opt-in; does not alter SP loopback path)
 - [ ] QuakeWorld or NetQuake protocol over WebSocket/WebRTC (separate milestone)
@@ -357,7 +357,7 @@ QuakeC VM            ███████░░░  ~65%   exec+edicts+builtins
 Client / protocol    ███████░░░  ~70%   loopback + clientdata + baselines + entity updates + clc_move
 UI / console/menu    █████████░  ~90%   sbar + conback console + menu + loading/intermission + centerprint
 Audio                █████░░░░░  ~50%   Web Audio SFX + spatialize + CD stub
-Saves / demos        ░░░░░░░░░░   0%
+Saves / demos        ███████░░░  ~70%   Quake .sav text + .dem record/play via localStorage
 Net (loopback)       ███████░░░  ~70%   NetLoop + SizeBuf + per-frame datagram
 Net (non-loopback)   ░░░░░░░░░░   0%
 ```
@@ -546,6 +546,7 @@ User supplies a legally obtained Quake `id1` directory (at least `pak0.pak`). Fi
 | 2026-07-25 | **Phase 4 loopback:** `NetLoop` + `SizeBuf`; `Client`/`ClientParse` (print, TE, lightstyle); Write* → datagram flush |
 | 2026-07-25 | **Phase backlog sweep:** Host init/shutdown; id1 file picker; frustum `R_CullBox`; QC `PutClientInServer`; `clc_move` loopback; centerprint overlay; `CdAudio` stub; view bob |
 | 2026-07-26 | **Phase 5 client slice:** usercmd→PlayerMove; `svc_clientdata`/`spawnbaseline`/fast entity updates; punch+roll; `walkmove`/`movetogoal`/`checkclient`; PlayerPostThink |
+| 2026-07-26 | **Phase 8 persistence:** `config.cfg`/`autoexec.cfg` localStorage; Quake `.sav` save/load; `.dem` record + playdemo |
 
 ---
 

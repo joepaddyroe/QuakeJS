@@ -86,4 +86,34 @@ export class CvarStore {
       a.name.localeCompare(b.name),
     );
   }
+
+  /**
+   * Cvar_WriteVariables — archived cvars as `name "value"\n`
+   * @returns {string}
+   */
+  writeArchived() {
+    let out = '';
+    for (const v of this.list()) {
+      if (!v.archive) continue;
+      out += `${v.name} "${v.string}"\n`;
+    }
+    return out;
+  }
+
+  /**
+   * Apply lines from config (name value or name "value").
+   * @param {string} text
+   * @returns {number} count applied
+   */
+  applyConfigText(text) {
+    let n = 0;
+    for (const raw of text.split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line || line.startsWith('//')) continue;
+      const m = line.match(/^(\S+)\s+"([^"]*)"\s*$/) || line.match(/^(\S+)\s+(\S+)\s*$/);
+      if (!m) continue;
+      if (this.set(m[1], m[2])) n += 1;
+    }
+    return n;
+  }
 }

@@ -3,6 +3,7 @@
  */
 
 import { Cvar } from '../core/Cvar.js';
+import { listStored } from '../app/ConfigIO.js';
 
 /**
  * @param {object} deps
@@ -31,6 +32,8 @@ export function registerHostCommands({ cmd, cvars, con, host, sound }) {
   // Apply initial volume
   const vol = cvars.find('volume');
   if (vol?.onChange) vol.onChange(vol);
+
+  cvars.register(new Cvar('skill', '1', { archive: true }));
 
   cmd.add('echo', (args) => {
     print(args.slice(1).join(' ') + '\n');
@@ -109,5 +112,73 @@ export function registerHostCommands({ cmd, cvars, con, host, sound }) {
 
   cmd.add('menu_main', () => {
     host.openMenu();
+  });
+
+  cmd.add('writeconfig', () => {
+    host.writeConfiguration();
+    print('Wrote config.cfg\n');
+  });
+
+  cmd.add('save', (args) => {
+    const name = args[1];
+    if (!name) {
+      print('save <savename> : save a game\n');
+      return;
+    }
+    try {
+      host.saveGame(name);
+      print(`Saving game to ${name}.sav… done.\n`);
+    } catch (err) {
+      print(`ERROR: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+  });
+
+  cmd.add('load', (args) => {
+    const name = args[1];
+    if (!name) {
+      print('load <savename> : load a game\n');
+      return;
+    }
+    print(`Loading game from ${name}.sav…\n`);
+    void host.loadGame(name).catch((err) => {
+      print(`ERROR: ${err instanceof Error ? err.message : String(err)}\n`);
+    });
+  });
+
+  cmd.add('savelist', () => {
+    for (const n of listStored('.sav')) print(`${n}\n`);
+  });
+
+  cmd.add('record', (args) => {
+    const name = args[1];
+    if (!name) {
+      print('record <demoname>\n');
+      return;
+    }
+    try {
+      host.startDemoRecord(name);
+      print(`recording to ${name}.dem\n`);
+    } catch (err) {
+      print(`ERROR: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+  });
+
+  cmd.add('stop', () => {
+    if (host.stopDemoRecord()) print('stopped recording\n');
+    else print('Not recording a demo.\n');
+  });
+
+  cmd.add('playdemo', (args) => {
+    const name = args[1];
+    if (!name) {
+      print('playdemo <demoname>\n');
+      return;
+    }
+    try {
+      host.playDemo(name);
+      print(`playing ${name}.dem\n`);
+    } catch (err) {
+      print(`ERROR: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
   });
 }

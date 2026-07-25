@@ -13,6 +13,11 @@ import { registerHostCommands } from '../ui/HostCmds.js';
 import { NetLoop } from '../net/NetLoop.js';
 import { Client } from '../client/Client.js';
 import { CdAudio } from '../audio/CdAudio.js';
+import { readConfig, writeConfig } from './ConfigIO.js';
+import { saveGame, loadSaveHeader, applySaveToServer } from '../server/SaveGame.js';
+import { DemoRecorder, DemoPlayer } from '../client/Demo.js';
+import { SizeBuf } from '../net/SizeBuf.js';
+import { parseServerMessage } from '../client/ClientParse.js';
 
 export class Host {
   /**
@@ -63,6 +68,11 @@ export class Host {
     this._mapLoading = false;
     this._initialized = false;
     this._shuttingDown = false;
+    this._pendingSave = null;
+    this.demoRecorder = new DemoRecorder();
+    this.demoPlayer = new DemoPlayer();
+    this._demoAngles = new Float32Array(3);
+    this._demoMsg = new SizeBuf(8192);
 
     this.cmd = new Cmd();
     this.cvars = new CvarStore();
@@ -164,10 +174,111 @@ export class Host {
     this.con.print('Host_Init: S / IN\n');
     this._cd.init();
     this.con.print('Host_Init: CDAudio stub\n');
+    this.execConfigs();
     this._connectLoopback();
     this._initialized = true;
     this.con.print('========QuakeJS Initialized=========\n');
     this.con.print('Ready. Esc = menu, ` = console.\n');
+  }
+
+  /**
+   * exec config.cfg then autoexec.cfg from localStorage.
+   */
+  execConfigs() {
+    for (const name of ['config.cfg', 'autoexec.cfg']) {
+      const text = readConfig(name);
+      if (!text) continue;
+      this.con.print(`execing ${name}\n`);
+      this.cmd.addText(text);
+      this.cmd.executeBuffer(
+        (args) => this._handleCvarArgs(args),
+        (msg) => this.con.print(msg),
+      );
+    }
+  }
+
+  /**
+   * Host_WriteConfiguration
+   */
+  writeConfiguration() {
+    const body = this.cvars.writeArchived();
+    writeConfig('config.cfg', body);
+  }
+
+  /**
+   * @param {string} name
+   */
+  saveGame(name) {
+    const server = this._renderer.server;
+    if (!server) throw new Error('Not playing a local game.');
+    if (server.isIntermission()) throw new Error("Can't save in intermission.");
+    const stats = server.getClientStats(1);
+    if (stats && stats.health <= 0) {
+      throw new Error("Can't savegame with a dead player");
+    }
+    server.skill = this.cvars.value('skill') | 0;
+    if (!saveGame(name, server)) throw new Error("couldn't open.");
+  }
+
+  /**
+   * @param {string} name
+   * @returns {Promise<void>}
+   */
+  async loadGame(name) {
+    const header = loadSaveHeader(name);
+    this.cvars.set('skill', header.skill);
+    this._pendingSave = header;
+    await this.changeMap(header.mapName);
+  }
+
+  /**
+   * @param {string} name
+   */
+  startDemoRecord(name) {
+    this.demoRecorder.start(name);
+  }
+
+  /** @returns {boolean} */
+  stopDemoRecord() {
+    return this.demoRecorder.stop();
+  }
+
+  /**
+   * @param {string} name
+   */
+  playDemo(name) {
+    this.demoPlayer.open(name);
+    if (this.demoPlayer.cdtrack > 0) {
+      this._cd.play(this.demoPlayer.cdtrack, true);
+    }
+    this.con.print(`Playing demo (freeze sim): ${this.demoPlayer.name}\n`);
+  }
+
+  /**
+   * Feed one demo message per frame into client parse.
+   * @param {number} dt
+   */
+  _runDemoPlayback(dt) {
+    void dt;
+    if (!this.demoPlayer.readMessage(this._demoMsg, this._demoAngles)) {
+      this.con.print('Demo finished\n');
+      this._cd.stop();
+      return;
+    }
+    this._pointer.pitch = this._demoAngles[0];
+    this._pointer.yaw = this._demoAngles[1];
+    const player = this._renderer.player;
+    if (player) {
+      player.pitch = this._demoAngles[0];
+      player.yaw = this._demoAngles[1];
+    }
+    parseServerMessage(this._demoMsg, {
+      ...this.client.hooks,
+      world: this.client.world,
+      time: (t) => {
+        this.client.mtime = t;
+      },
+    });
   }
 
   /**
@@ -177,6 +288,9 @@ export class Host {
     if (this._shuttingDown) return;
     this._shuttingDown = true;
     this.con.print('Host_Shutdown\n');
+    if (this._initialized) this.writeConfiguration();
+    if (this.demoRecorder.recording) this.demoRecorder.stop();
+    this.demoPlayer.stop();
     this.client.disconnect();
     this._cd.shutdown();
     window.removeEventListener('keydown', this._onKeyDown, true);
@@ -279,6 +393,13 @@ export class Host {
       if (this._overlay) await this._overlay.waitForPaint();
       this._menu?.close();
       this._renderer.loadMap(this._fs, path, this._sound);
+      const server = this._renderer.server;
+      if (server && this._pendingSave) {
+        const header = this._pendingSave;
+        this._pendingSave = null;
+        applySaveToServer(server, header);
+        server.skill = header.skill;
+      }
       this.syncPointerFromCamera();
       this._connectLoopback();
     } finally {
@@ -299,6 +420,14 @@ export class Host {
     const consoleOpen = this.con.isOpen;
     const menuOpen = !!(this._menu && this._menu.isOpen);
     const uiBlocking = consoleOpen || menuOpen;
+    const demoPlaying = this.demoPlayer.playing;
+
+    if (demoPlaying) {
+      this._runDemoPlayback(dt);
+      this._renderer.frame(width, height, dt);
+      this.con.frame(dt);
+      return;
+    }
 
     if (server?.pendingMap) {
       const map = server.pendingMap;
@@ -475,7 +604,14 @@ export class Host {
     }
 
     if (server) {
-      server.sendClientMessages();
+      const frameBytes = server.sendClientMessages();
+      if (this.demoRecorder.recording && frameBytes) {
+        this.demoRecorder.writeMessage(frameBytes, [
+          this._pointer.pitch,
+          this._pointer.yaw,
+          0,
+        ]);
+      }
       this.client.readPackets();
     }
 

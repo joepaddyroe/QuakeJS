@@ -166,6 +166,11 @@ export class Server {
     this._wasIntermission = false;
     /** Next time to advance view-weapon fire frames. */
     this._weaponAnimNext = 0;
+    /** @type {number[]} */
+    this.spawnParms = new Array(16).fill(0);
+    this.skill = 1;
+    this.loadgame = false;
+    this.paused = false;
     this._spawnEntities();
     // Settle
     const saved = 0.1;
@@ -424,11 +429,46 @@ export class Server {
   }
 
   /**
+   * Capture parm1..parm16 after SetNewParms.
+   */
+  _captureSpawnParms() {
+    const gf = this.progs.globalsF;
+    for (let i = 0; i < 16; i++) {
+      const ofs = this.progs.globalOfs.get(`parm${i + 1}`);
+      this.spawnParms[i] = ofs !== undefined ? gf[ofs] : 0;
+    }
+  }
+
+  /**
+   * Restore spawn parms into globals (loadgame / reconnect).
+   */
+  _restoreSpawnParms() {
+    const gf = this.progs.globalsF;
+    for (let i = 0; i < 16; i++) {
+      const ofs = this.progs.globalOfs.get(`parm${i + 1}`);
+      if (ofs !== undefined) gf[ofs] = this.spawnParms[i] || 0;
+    }
+  }
+
+  /**
    * Host_Spawn subset — SetNewParms + ClientConnect + PutClientInServer.
    * @param {number} [ent=1]
    * @returns {{ origin: Float32Array, pitch: number, yaw: number } | null}
    */
   putClientInServer(ent = 1) {
+    // Host_Spawn loadgame path — edict already restored; skip QC spawn
+    if (this.loadgame) {
+      this._clientSpawned = true;
+      this._clientLoadoutReady = true;
+      this.loadgame = false;
+      this.paused = false;
+      const f = this.progs.f;
+      // Keep FP without third-person body
+      this.edicts.setInt(ent, f.model, 0);
+      this.edicts.setFloat(ent, f.modelindex, 0);
+      this.edicts.linkAbs(ent);
+      return this._clientSpawnPose(ent);
+    }
     if (this._clientSpawned) {
       return this._clientSpawnPose(ent);
     }
@@ -463,6 +503,7 @@ export class Server {
     };
 
     run(ofs.SetNewParms, 'SetNewParms');
+    this._captureSpawnParms();
     run(ofs.ClientConnect, 'ClientConnect');
     run(ofs.PutClientInServer, 'PutClientInServer');
 
@@ -623,9 +664,10 @@ export class Server {
 
   /**
    * SV_SendClientMessages / SV_SendClientDatagram subset.
+   * @returns {Uint8Array|null} unreliable frame bytes (for demo record)
    */
   sendClientMessages() {
-    if (!this.net || !this.netSocket) return;
+    if (!this.net || !this.netSocket) return null;
 
     const msg = this._frameMsg;
     msg.clear();
@@ -639,13 +681,18 @@ export class Server {
     for (let i = 0; i < pending.length; i++) msg.writeByte(pending[i]);
     this.datagram.clear();
 
+    /** @type {Uint8Array|null} */
+    let recorded = null;
     if (msg.cursize > 0) {
+      recorded = new Uint8Array(msg.cursize);
+      recorded.set(msg.bytes());
       this.net.sendUnreliable(this.netSocket, msg);
     }
     if (this.reliable.cursize > 0) {
       this.net.sendReliable(this.netSocket, this.reliable);
       this.reliable.clear();
     }
+    return recorded;
   }
 
   /**
