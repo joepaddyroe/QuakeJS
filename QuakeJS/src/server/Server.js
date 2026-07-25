@@ -24,6 +24,8 @@ import {
 } from '../progs/Edicts.js';
 import { PrExec } from '../progs/PrExec.js';
 import { createBuiltins } from '../progs/Builtins.js';
+import { OFS_PARM0 } from '../progs/Progs.js';
+import { angleVectors } from '../math/QuakeMath.js';
 import { World } from './World.js';
 
 /**
@@ -105,10 +107,63 @@ export class Server {
 
     this.time = 1.0;
     this.edicts.time = this.time;
+    /** @type {string|null} */
+    this.pendingMap = null;
+    this._changelevelIssued = false;
     this._spawnEntities();
     // Settle
     const saved = 0.1;
     for (let i = 0; i < 2; i++) this.physics(saved);
+  }
+
+  /**
+   * @param {string} map short name e.g. "e1m1"
+   */
+  requestChangeLevel(map) {
+    if (this._changelevelIssued) return;
+    this._changelevelIssued = true;
+    const name = map.replace(/^maps\//, '').replace(/\.bsp$/i, '');
+    this.pendingMap = name;
+    console.info(`[server] changelevel → ${name}`);
+  }
+
+  /**
+   * @returns {boolean}
+   */
+  isIntermission() {
+    const ofs = this.progs.globalOfs.get('intermission_running');
+    if (ofs === undefined) return false;
+    return !!this.progs.globalsF[ofs];
+  }
+
+  /**
+   * SV_Physics_Client subset — PlayerPreThink (intermission / rules).
+   * @param {number} ent
+   * @param {{ attack?: boolean, jump?: boolean }} buttons
+   */
+  runClientThink(ent, buttons = {}) {
+    const progs = this.progs;
+    const edicts = this.edicts;
+    const f = progs.f;
+    const ofs = progs.ofs;
+    const gi = progs.globalsI;
+    const gf = progs.globalsF;
+
+    edicts.setFloat(ent, f.button0, buttons.attack ? 1 : 0);
+    edicts.setFloat(ent, f.button1, 0);
+    edicts.setFloat(ent, f.button2, buttons.jump ? 1 : 0);
+
+    const pre = gi[ofs.PlayerPreThink];
+    if (!pre) return;
+    gi[ofs.self] = ent;
+    gi[ofs.other] = 0;
+    gf[ofs.time] = this.time;
+    try {
+      this.exec.execute(pre);
+    } catch (err) {
+      this.exec.reset();
+      console.error('PlayerPreThink', err);
+    }
   }
 
   /**
@@ -320,6 +375,7 @@ export class Server {
       try {
         this.exec.execute(startFrame);
       } catch (err) {
+        this.exec.reset();
         console.error('StartFrame', err);
       }
     }
@@ -376,6 +432,7 @@ export class Server {
     try {
       this.exec.execute(think);
     } catch (err) {
+      this.exec.reset();
       console.error(`think ent ${ent}`, err);
     }
   }
@@ -532,14 +589,14 @@ export class Server {
   }
 
   /**
-   * Brush models to draw (doors/plats/walls) — *N submodels with SOLID_BSP.
-   * @returns {{ submodel: number, origin: Float32Array }[]}
+   * Brush models to draw / clip (doors/plats/buttons) — *N submodels with SOLID_BSP.
+   * @returns {{ submodel: number, origin: Float32Array, edict: number }[]}
    */
   getBrushDrawList() {
     const edicts = this.edicts;
     const f = this.progs.f;
     const progs = this.progs;
-    /** @type {{ submodel: number, origin: Float32Array }[]} */
+    /** @type {{ submodel: number, origin: Float32Array, edict: number }[]} */
     const out = [];
     for (let e = 1; e < edicts.numEdicts; e++) {
       if (edicts.free[e]) continue;
@@ -552,9 +609,167 @@ export class Server {
       out.push({
         submodel: sub,
         origin: new Float32Array([o[0], o[1], o[2]]),
+        edict: e,
       });
     }
     return out;
+  }
+
+  /**
+   * SV_Impact — run touch functions when two entities collide.
+   * @param {number} e1
+   * @param {number} e2
+   */
+  impact(e1, e2) {
+    const edicts = this.edicts;
+    const f = this.progs.f;
+    const ofs = this.progs.ofs;
+    if (edicts.free[e1] || edicts.free[e2]) return;
+
+    const touch1 = edicts.getInt(e1, f.touch);
+    const solid1 = edicts.getFloat(e1, f.solid) | 0;
+    if (touch1 && solid1 !== SOLID_NOT) {
+      this.progs.globalsI[ofs.self] = e1;
+      this.progs.globalsI[ofs.other] = e2;
+      this.progs.globalsF[ofs.time] = this.time;
+      try {
+        this.exec.execute(touch1);
+      } catch (err) {
+        console.error(`impact touch ${e1}`, err);
+      }
+    }
+
+    const touch2 = edicts.getInt(e2, f.touch);
+    const solid2 = edicts.getFloat(e2, f.solid) | 0;
+    if (touch2 && solid2 !== SOLID_NOT) {
+      this.progs.globalsI[ofs.self] = e2;
+      this.progs.globalsI[ofs.other] = e1;
+      this.progs.globalsF[ofs.time] = this.time;
+      try {
+        this.exec.execute(touch2);
+      } catch (err) {
+        console.error(`impact touch ${e2}`, err);
+      }
+    }
+  }
+
+  /**
+   * @param {number} playerEnt
+   * @param {Iterable<number>|number[]} hitEnts brush edicts bumped this frame
+   */
+  impactTouches(playerEnt, hitEnts) {
+    const seen = new Set();
+    for (const e of hitEnts) {
+      if (!e || e === playerEnt || seen.has(e)) continue;
+      seen.add(e);
+      this.impact(playerEnt, e);
+    }
+  }
+
+  /**
+   * Point trace (hull 0) against world + SOLID_BSP brushes — for attacks.
+   * @param {Float32Array|number[]} start
+   * @param {Float32Array|number[]} end
+   * @returns {import('./World.js').Trace}
+   */
+  traceLine(start, end) {
+    const hull = this.bsp.hulls[0];
+    const w = this.world;
+    const zero = new Float32Array(3);
+    let trace = w._clipToHull(hull, 0, 0, 0, start, end, zero, zero);
+    trace.ent = 0;
+
+    for (const be of w.brushes) {
+      const sm = this.bsp.submodels[be.submodel];
+      if (!sm) continue;
+      const brushHull = {
+        clipnodes: hull.clipnodes,
+        planes: hull.planes,
+        firstclipnode: sm.headnode[0],
+        lastclipnode: hull.lastclipnode,
+        clipMins: hull.clipMins,
+        clipMaxs: hull.clipMaxs,
+      };
+      const tr = w._clipToHull(
+        brushHull,
+        be.origin[0],
+        be.origin[1],
+        be.origin[2],
+        start,
+        end,
+        zero,
+        zero,
+      );
+      if (tr.allsolid || tr.fraction < trace.fraction) {
+        tr.ent = be.edict || 0;
+        trace = tr;
+      }
+    }
+    return trace;
+  }
+
+  /**
+   * Shootable brushes (secret doors, health buttons): call th_pain / th_die.
+   * @param {number} attackerEnt
+   * @param {Float32Array|number[]} eye
+   * @param {number} pitch deg
+   * @param {number} yaw deg
+   * @param {number} [damage=20]
+   */
+  fireHitscan(attackerEnt, eye, pitch, yaw, damage = 20) {
+    const { forward } = angleVectors([pitch, yaw, 0]);
+    const end = new Float32Array([
+      eye[0] + forward[0] * 2048,
+      eye[1] + forward[1] * 2048,
+      eye[2] + forward[2] * 2048,
+    ]);
+    const tr = this.traceLine(eye, end);
+    if (!tr.ent || tr.fraction >= 1) return;
+
+    const edicts = this.edicts;
+    const progs = this.progs;
+    const ofs = progs.ofs;
+    const takedamageOfs = progs.fieldByName.get('takedamage')?.ofs;
+    const thPainOfs = progs.fieldByName.get('th_pain')?.ofs;
+    const thDieOfs = progs.fieldByName.get('th_die')?.ofs;
+
+    if (takedamageOfs == null || !(edicts.getFloat(tr.ent, takedamageOfs) > 0)) {
+      return;
+    }
+
+    let health = edicts.getFloat(tr.ent, progs.f.health);
+    health -= damage;
+    edicts.setFloat(tr.ent, progs.f.health, health);
+
+    progs.globalsI[ofs.self] = tr.ent;
+    progs.globalsI[ofs.other] = attackerEnt;
+    progs.globalsF[ofs.time] = this.time;
+
+    if (health <= 0 && thDieOfs != null) {
+      const die = edicts.getInt(tr.ent, thDieOfs);
+      if (die) {
+        try {
+          this.exec.execute(die);
+        } catch (err) {
+          console.error(`th_die ${tr.ent}`, err);
+        }
+        return;
+      }
+    }
+
+    // Secret doors open via th_pain (fd_secret_use) on any hit
+    if (thPainOfs != null) {
+      const pain = edicts.getInt(tr.ent, thPainOfs);
+      if (pain) {
+        progs.globalsI[OFS_PARM0] = attackerEnt;
+        progs.globalsF[OFS_PARM0 + 1] = damage;
+        try {
+          this.exec.execute(pain);
+        } catch (err) {
+          console.error(`th_pain ${tr.ent}`, err);
+        }
+      }
+    }
   }
 
   /**

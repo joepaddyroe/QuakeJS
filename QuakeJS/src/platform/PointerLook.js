@@ -12,6 +12,8 @@ export class PointerLook {
     /** Degrees per pixel */
     this.sensitivity = 0.12;
     this._locked = false;
+    /** Fire / attack (QC button0) */
+    this.attack = false;
 
     this._onClick = () => {
       if (!this._locked) {
@@ -29,25 +31,34 @@ export class PointerLook {
       if (this.pitch > limit) this.pitch = limit;
       if (this.pitch < -limit) this.pitch = -limit;
     };
+    this._onMouseDown = (e) => {
+      if (e.button === 0) this.attack = true;
+    };
+    this._onMouseUp = (e) => {
+      if (e.button === 0) this.attack = false;
+    };
+  }
+
+  get locked() {
+    return this._locked;
   }
 
   attach() {
     this._canvas.addEventListener('click', this._onClick);
     document.addEventListener('pointerlockchange', this._onLockChange);
     document.addEventListener('mousemove', this._onMouseMove);
+    document.addEventListener('mousedown', this._onMouseDown);
+    document.addEventListener('mouseup', this._onMouseUp);
   }
 
   detach() {
     this._canvas.removeEventListener('click', this._onClick);
     document.removeEventListener('pointerlockchange', this._onLockChange);
     document.removeEventListener('mousemove', this._onMouseMove);
+    document.removeEventListener('mousedown', this._onMouseDown);
+    document.removeEventListener('mouseup', this._onMouseUp);
     if (document.pointerLockElement === this._canvas) {
       document.exitPointerLock?.();
     }
-  }
-
-  /** @returns {boolean} */
-  get locked() {
-    return this._locked;
   }
 }

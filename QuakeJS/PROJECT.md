@@ -53,7 +53,7 @@ If you are picking up this project with no chat history:
 5. Respect **§2–3** (SOLID + layers) before editing.
 6. After completing work, update **§12**, **§7**, and **§15 Changelog** in this file. Leave `README.md` alone unless the change is drastic for end users.
 
-**Current maturity (2026-07-25):** id1 PAK + BSP world (textures, lightmaps, PVS, sky, turb) + hull1 walk + **stair view smooth** + QuakeC spawn/think/touch + **`*N` brush ents drawn** (doors/plats). No entity↔player clip yet; no loopback protocol.
+**Current maturity (2026-07-25):** id1 PAK + BSP world + hull walk + stair smooth + QuakeC + brush draw/clip + **changelevel** (touch episode exit → load `e1m1` etc.). No alias models / loopback protocol yet.
 
 ### Remaining tasks (priority order)
 
@@ -66,8 +66,8 @@ Use **§13** for file-level detail. Summary:
 | **P1** | BSP / alias / sprite model load | Partial — BSP brush only |
 | **P1** | WebGPU world draw (brush + lightmaps) | Done (+ PVS/sky/turb) |
 | **P2** | Loopback client ↔ server + protocol | Not started |
-| **P2** | QuakeC VM (`pr_exec` / edicts / builtins) | Partial — spawn/think/touch |
-| **P2** | Physics / movement (`sv_phys`, `world`) | Partial — walk + PUSH/TOSS scaffold |
+| **P2** | QuakeC VM (`pr_exec` / edicts / builtins) | Partial — spawn/think/touch/changelevel |
+| **P2** | Physics / movement (`sv_phys`, `world`) | Partial — walk + brush clip + PUSH |
 | **P3** | View weapon, particles, status bar, menu | Not started |
 | **P3** | Sound (DMA-style mix → Web Audio) | Not started |
 | **P4** | Saves, demos, console polish | Not started |
@@ -304,9 +304,10 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started
 - [x] Map entity spawn + think / PUSH / trigger touch (`Server.js` in Host frame)
 - [x] Draw `*N` brush entities (doors/plats) at edict origin
 - [x] Stair view smoothing (`view.c` oldz → eye Z)
-- [ ] Clip player against brush entities
+- [x] Clip player against brush entities (`World.brushes` / submodel hulls)
+- [x] `changelevel` builtin + Host map reload (`e1m1` …)
 - [ ] Client connect via **loopback** (`net_loop`)
-- [ ] Fuller builtins (sound, aim, walkmove, …) + `PutClientInServer`
+- [ ] Fuller builtins + `PutClientInServer` / view weapon
 
 ### Phase 5 — Client playable slice
 - [ ] `CL_SendCmd` / `SV_ClientThink` movement
@@ -407,7 +408,8 @@ Use this when choosing what to port next. Goal: **playable Quake 1 single-player
 | P1 | **PVS + sky/turb** | Done | `BspModel.js`, `WorldRenderer.js` · `gl_warp.c`, `Mod_LeafPVS` |
 | P2 | **Physics / hulls** | Partial — world walk | `server/World.js`, `PlayerMove.js` · `world.c`, `sv_phys.c` |
 | P2 | **QuakeC VM + builtins** | Partial — spawn/think/touch | `progs/*`, `Server.js` · `pr_exec.c`, `pr_edict.c`, `pr_cmds.c` |
-| P2 | **Draw brush ents + entity clip** | Partial — draw only | `WorldRenderer` submodels · `sv_phys` / `SV_ClipToLinks` |
+| P2 | **Draw brush ents + entity clip** | Done | `WorldRenderer` + `World.brushes` · `SV_ClipMoveToEntity` |
+| P2 | **Changelevel / map load** | Done (no intermission UI) | `Host.changeMap`, builtin #70 · `host_cmd.c` |
 | P2 | **Loopback net + SV/CL connect** | Real Quake architecture | `net/NetLoop.js`, `Client.js` · `net_loop.c`, `sv_main.c`, `cl_main.c` |
 | P3 | **Alias + view weapon** | Player presence | `AliasRenderer.js` · `gl_mesh.c`, `view.c` |
 | P3 | **Status bar + menu + console** | Operable game | `ui/*` · `sbar.c`, `menu.c`, `console.c` |
@@ -512,6 +514,8 @@ User supplies a legally obtained Quake `id1` directory (at least `pak0.pak`). Fi
 | 2026-07-25 | **QuakeC VM:** `Progs`/`Edicts`/`PrExec`/`Builtins`, map spawn + think/PUSH/touch in `Host`; fixed LOAD/ADDRESS field-ofs (WinQuake `pr_exec.c`) |
 | 2026-07-25 | **Brush ents + stair smooth:** draw `*N` submodels at origin; `view.c` step-up eye lag (`_smoothZ`) |
 | 2026-07-25 | **Brush collision:** clip player vs SOLID_BSP `*N` hulls (fixes fall-through under `func_bossgate` after start teleporters) |
+| 2026-07-25 | **Changelevel:** builtin #70 + `Host.changeMap`; PlayerPreThink/buttons; touch episode exits to load `e1m1` etc. |
+| 2026-07-25 | **Doors/buttons:** SV_Impact on brush bumps (func_button); hitscan for shootable secret doors; walk-up door fields already via SOLID_TRIGGER |
 
 ---
 

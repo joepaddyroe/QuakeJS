@@ -47,6 +47,8 @@ export class PlayerMove {
    */
   constructor(world) {
     this.world = world;
+    /** @type {Set<number>} SOLID_BSP edicts bumped this frame (SV_Impact) */
+    this.impactedEdicts = new Set();
     /** Entity origin (feet) */
     this.origin = new Float32Array(3);
     this.velocity = new Float32Array(3);
@@ -122,6 +124,7 @@ export class PlayerMove {
    * @param {{ forward: boolean, back: boolean, left: boolean, right: boolean, jump: boolean, up: boolean, down: boolean }} cmd
    */
   update(dt, cmd) {
+    this.impactedEdicts.clear();
     if (dt <= 0) return;
     if (dt > 0.1) dt = 0.1;
 
@@ -389,6 +392,8 @@ export class PlayerMove {
       }
 
       if (trace.fraction === 1) break;
+
+      if (trace.ent) this.impactedEdicts.add(trace.ent);
 
       if (trace.plane.normal[2] > 0.7) {
         blocked |= 1;

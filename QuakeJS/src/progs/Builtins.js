@@ -56,7 +56,7 @@ export function createBuiltins(ctx) {
   const PARM = (n) => OFS_PARM0 + n * 3;
 
   /** @type {((() => void) | null)[]} */
-  const builtins = new Array(80).fill(null);
+  const builtins = new Array(96).fill(null);
 
   const fixme = () => {
     console.warn('QC Fixme builtin');
@@ -292,8 +292,11 @@ export function createBuiltins(ctx) {
     RETURN_VECTOR(G_VECTOR(ofs.v_forward));
   }; // aim stub
   builtins[45] = () => {
+    // cvar(name) — enough for changelevel / registered checks
+    const name = G_STRING(PARM(0));
+    if (name === 'registered') RETURN_FLOAT(1);
     RETURN_FLOAT(0);
-  }; // cvar stub
+  };
   builtins[46] = () => {}; // localcmd
   builtins[47] = () => {
     let e = G_INT(PARM(0)) + 1;
@@ -350,7 +353,11 @@ export function createBuiltins(ctx) {
     edicts.freeEdict(G_INT(ofs.self));
   };
   builtins[69] = builtins[20];
-  builtins[70] = () => {}; // changelevel
+  builtins[70] = () => {
+    // changelevel(map)
+    const map = G_STRING(PARM(0));
+    if (map) ctx.server.requestChangeLevel(map);
+  };
   builtins[71] = fixme;
   builtins[72] = () => {}; // cvar_set
   builtins[73] = () => {}; // centerprint
@@ -362,6 +369,10 @@ export function createBuiltins(ctx) {
   }; // precache_file
   builtins[78] = () => {}; // setspawnparms
   builtins[79] = fixme;
+  builtins[80] = () => {
+    // infokey(e, key) — empty unless needed
+    RETURN_STRING('');
+  };
 
   // silence unused
   void MOVETYPE_PUSH;

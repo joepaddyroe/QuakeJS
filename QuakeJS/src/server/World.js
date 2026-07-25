@@ -21,6 +21,7 @@ const DIST_EPSILON = 0.03125;
  * @property {number} fraction
  * @property {Float32Array} endpos
  * @property {{ normal: Float32Array, dist: number }} plane
+ * @property {number} ent edict index (0 = world)
  */
 
 /**
@@ -35,6 +36,7 @@ function emptyTrace(end) {
     fraction: 1,
     endpos: new Float32Array(end),
     plane: { normal: new Float32Array([0, 0, 0]), dist: 0 },
+    ent: 0,
   };
 }
 
@@ -44,7 +46,7 @@ export class World {
    */
   constructor(bsp) {
     this.bsp = bsp;
-    /** @type {{ submodel: number, origin: Float32Array }[]} SOLID_BSP brush ents to clip */
+    /** @type {{ submodel: number, origin: Float32Array, edict?: number }[]} SOLID_BSP brush ents to clip */
     this.brushes = [];
   }
 
@@ -94,6 +96,7 @@ export class World {
     const mns = mins || hull.clipMins;
     const mxs = maxs || hull.clipMaxs;
     let trace = this._clipToHull(hull, 0, 0, 0, start, end, mns, mxs);
+    trace.ent = 0;
 
     for (const be of this.brushes) {
       const sm = this.bsp.submodels[be.submodel];
@@ -117,6 +120,7 @@ export class World {
         mxs,
       );
       if (tr.allsolid || tr.fraction < trace.fraction) {
+        tr.ent = be.edict || 0;
         trace = tr;
       }
     }

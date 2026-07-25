@@ -73,7 +73,7 @@ async function main() {
     console.warn('Map load failed, using demo room:', lastErr);
   }
 
-  const host = new Host({ canvas, hud, keyboard, pointer, renderer });
+  const host = new Host({ canvas, hud, keyboard, pointer, renderer, fs });
   host.syncPointerFromCamera();
 
   const loop = new GameLoop(host);

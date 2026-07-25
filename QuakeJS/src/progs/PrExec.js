@@ -99,6 +99,16 @@ export class PrExec {
   }
 
   /**
+   * Reset call/locals stacks (after a hard fault so later frames can run).
+   */
+  reset() {
+    this.stack.length = 0;
+    this.localstack_used = 0;
+    this.xstatement = 0;
+    this.xfunction = 0;
+  }
+
+  /**
    * @param {number} fnum function index
    */
   execute(fnum) {
@@ -112,19 +122,27 @@ export class PrExec {
 
     if (!fnum || fnum >= functions.length) return;
 
+    // Recover from a previous fault that left the VM wedged
+    if (this.stack.length > 0 && this.stack.length >= MAX_STACK_DEPTH) {
+      this.reset();
+    }
+
     const exitDepth = this.stack.length;
-    let s = this._enterFunction(fnum);
+    const exitLocals = this.localstack_used;
     let runaway = 100000;
+    let s;
 
-    while (--runaway > 0) {
-      s++;
-      this.xstatement = s;
-      const st = statements[s];
-      const a = st.a;
-      const b = st.b;
-      const c = st.c;
+    try {
+      s = this._enterFunction(fnum);
+      while (--runaway > 0) {
+        s++;
+        this.xstatement = s;
+        const st = statements[s];
+        const a = st.a;
+        const b = st.b;
+        const c = st.c;
 
-      switch (st.op) {
+        switch (st.op) {
         case OP.ADD_F:
           gf[c] = gf[a] + gf[b];
           break;
@@ -308,10 +326,11 @@ export class PrExec {
           if (!fnum) throw new Error('NULL function');
           const fn = functions[fnum];
           if (fn.first_statement < 0) {
+            // Builtins must NOT overwrite xfunction — WinQuake keeps the QC caller
+            // so OP_RETURN restores the correct locals (pr_exec.c OP_CALL*).
             const bi = -fn.first_statement;
             const builtin = this.builtins[bi];
             if (!builtin) throw new Error(`Bad builtin ${bi}`);
-            this.xfunction = fnum;
             builtin();
           } else {
             s = this._enterFunction(fnum);
@@ -339,6 +358,18 @@ export class PrExec {
       }
     }
     throw new Error('runaway loop error');
+    } catch (err) {
+      // Hard reset — leaveFunction can itself be wrong if xfunction was corrupted
+      this.stack.length = exitDepth;
+      this.localstack_used = exitLocals;
+      if (exitDepth === 0) {
+        this.xfunction = 0;
+        this.xstatement = 0;
+      } else if (this.stack.length) {
+        this.xfunction = this.stack[this.stack.length - 1].f;
+      }
+      throw err;
+    }
   }
 
   /**
@@ -358,6 +389,7 @@ export class PrExec {
     const start = this.localstack_used;
     const locals = fn.locals;
     if (start + locals > LOCALSTACK_SIZE) {
+      this.stack.pop();
       throw new Error('locals stack overflow');
     }
     for (let i = 0; i < locals; i++) {
@@ -385,10 +417,17 @@ export class PrExec {
     const fn = progs.functions[this.xfunction];
     const gi = progs.globalsI;
 
-    const locals = fn.locals;
+    if (!this.stack.length) {
+      throw new Error('prog stack underflow');
+    }
+
+    const locals = fn ? fn.locals : 0;
     this.localstack_used -= locals;
-    for (let i = 0; i < locals; i++) {
-      gi[fn.parm_start + i] = this.localstack[this.localstack_used + i];
+    if (this.localstack_used < 0) this.localstack_used = 0;
+    if (fn) {
+      for (let i = 0; i < locals; i++) {
+        gi[fn.parm_start + i] = this.localstack[this.localstack_used + i];
+      }
     }
 
     const frame = this.stack.pop();
