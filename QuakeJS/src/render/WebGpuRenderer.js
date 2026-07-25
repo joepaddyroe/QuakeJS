@@ -8,6 +8,7 @@ import { WorldRenderer } from './WorldRenderer.js';
 import { AliasRenderer } from './AliasRenderer.js';
 import { SpriteRenderer } from './SpriteRenderer.js';
 import { ParticleSystem } from './ParticleSystem.js';
+import { LightStyles } from './LightStyles.js';
 import { BspModel } from './models/BspModel.js';
 import { PlayerMove } from '../server/PlayerMove.js';
 import { Server } from '../server/Server.js';
@@ -23,6 +24,8 @@ export class WebGpuRenderer {
     this._aliasRend = new AliasRenderer(gpu.device, gpu.presentationFormat);
     this._spriteRend = new SpriteRenderer(gpu.device, gpu.presentationFormat);
     this._particles = new ParticleSystem(gpu.device, gpu.presentationFormat);
+    this._lightStyles = new LightStyles();
+    this._worldRend.setLightStyles(this._lightStyles);
     this._demoCamera = new FlyCamera();
     /** @type {PlayerMove|null} */
     this.player = null;
@@ -77,11 +80,12 @@ export class WebGpuRenderer {
     this._worldRend.buildFromBsp(bsp, palette);
     this._aliasRend.setFilesystem(fs, palette);
     this._spriteRend.setFilesystem(fs, palette);
-    this.server = new Server(bsp, fs, mapPath, sound);
+    this.server = new Server(bsp, fs, mapPath, sound, this._lightStyles);
     this.server.particles = this._particles;
     this.server.onTempEntity = (te, pos) => {
       if (te === 3 || te === 4) this._spriteRend.spawnExplosion(pos);
     };
+    this._worldRend.invalidateLightmapCache();
     this.collision = this.server.world;
     this.player = new PlayerMove(this.collision);
     this.mode = 'world';

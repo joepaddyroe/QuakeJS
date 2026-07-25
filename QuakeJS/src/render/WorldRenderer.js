@@ -4,11 +4,12 @@
  */
 
 import { mat4LookAt, mat4Multiply, mat4Perspective, mat4Translate } from '../math/Mat4.js';
+import { LightStyles } from './LightStyles.js';
 
 const BLOCK_WIDTH = 128;
 const BLOCK_HEIGHT = 128;
 const MAX_LIGHTMAPS = 64;
-const LIGHTSTYLE_SCALE = 264;
+const LIGHTSTYLE_SCALE = 264; // 'm' → 12*22
 
 const SOLID_WGSL = /* wgsl */ `
 struct Uniforms { viewProj : mat4x4f, };
@@ -289,6 +290,22 @@ export class WorldRenderer {
     this._gpuTextures = [];
     /** @type {GPUTexture[]} */
     this._gpuLightmaps = [];
+    /**
+     * Surfaces that own a lightmap block (for style rebuilds).
+     * @type {{
+     *   faceIndex: number,
+     *   texnum: number,
+     *   x: number,
+     *   y: number,
+     *   smax: number,
+     *   tmax: number,
+     *   styles: number[],
+     *   cached: number[],
+     * }[]}
+     */
+    this._lmSurfaces = [];
+    /** @type {LightStyles|null} */
+    this._lightStyles = null;
     this._skySolidTex = null;
     this._skyAlphaTex = null;
     this._skySolidBg = null;
@@ -303,6 +320,14 @@ export class WorldRenderer {
     this.triCount = 0;
     this.visibleFaces = 0;
     this.viewLeaf = 0;
+  }
+
+  /**
+   * Share client lightstyles with the server (PF_lightstyle).
+   * @param {LightStyles} styles
+   */
+  setLightStyles(styles) {
+    this._lightStyles = styles;
   }
 
   initPipeline() {
@@ -484,6 +509,7 @@ export class WorldRenderer {
     this.destroyMeshes();
     this._bsp = bsp;
     this.mapName = bsp.name;
+    this._lmSurfaces = [];
     const device = this._device;
     if (!bsp.submodels.length) throw new Error('BSP has no submodels');
 
@@ -565,7 +591,33 @@ export class WorldRenderer {
           face.lightS = block.x;
           face.lightT = block.y;
           face.lightmapIndex = block.texnum;
-          this._fillLightmap(bsp, face, lmAlloc.pages[block.texnum], block.x, block.y, smax, tmax);
+          const styleValues = this._lightStyles?.values;
+          this._fillLightmap(
+            bsp,
+            face,
+            lmAlloc.pages[block.texnum],
+            block.x,
+            block.y,
+            smax,
+            tmax,
+            styleValues,
+          );
+          const cached = [0, 0, 0, 0];
+          for (let m = 0; m < 4; m++) {
+            const st = face.styles[m];
+            if (st === 255) break;
+            cached[m] = styleValues ? styleValues[st] : LIGHTSTYLE_SCALE;
+          }
+          this._lmSurfaces.push({
+            faceIndex: fi,
+            texnum: block.texnum,
+            x: block.x,
+            y: block.y,
+            smax,
+            tmax,
+            styles: face.styles.slice(),
+            cached,
+          });
 
           const key = `${ti.miptex}:${face.lightmapIndex}`;
           if (!solidBgCache.has(key)) solidBgCache.set(key, null);
@@ -756,24 +808,122 @@ export class WorldRenderer {
     return tex;
   }
 
-  _fillLightmap(bsp, face, page, lx, ly, smax, tmax) {
+  /**
+   * Build one lightmap block (R_BuildLightMap subset — styles only, no dlights).
+   * @param {import('./models/BspModel.js').BspModel} bsp
+   * @param {import('./models/BspModel.js').BspFace} face
+   * @param {Uint8Array|null} page full atlas page, or null to skip
+   * @param {number} lx
+   * @param {number} ly
+   * @param {number} smax
+   * @param {number} tmax
+   * @param {Int32Array|null} [styleValues]
+   * @param {Uint8Array|null} [outRect] optional smax*tmax*4 buffer for GPU upload
+   */
+  _fillLightmap(bsp, face, page, lx, ly, smax, tmax, styleValues = null, outRect = null) {
     const size = smax * tmax;
     const blocklights = new Uint32Array(size);
     if (bsp.lightdata && face.lightofs !== -1 && face.styles[0] !== 255) {
-      const sample = face.lightofs;
-      for (let i = 0; i < size; i++) blocklights[i] = bsp.lightdata[sample + i] * LIGHTSTYLE_SCALE;
+      let sample = face.lightofs;
+      for (let maps = 0; maps < 4 && face.styles[maps] !== 255; maps++) {
+        const st = face.styles[maps];
+        const scale = styleValues ? styleValues[st] : LIGHTSTYLE_SCALE;
+        for (let i = 0; i < size; i++) {
+          blocklights[i] += bsp.lightdata[sample + i] * scale;
+        }
+        sample += size;
+      }
     } else {
-      blocklights.fill(255 * LIGHTSTYLE_SCALE);
+      blocklights.fill(255 * 256);
     }
     for (let t = 0; t < tmax; t++) {
       for (let s = 0; s < smax; s++) {
         let val = blocklights[t * smax + s] >> 7;
         if (val > 255) val = 255;
-        const o = ((ly + t) * BLOCK_WIDTH + (lx + s)) * 4;
-        page[o] = val;
-        page[o + 1] = val;
-        page[o + 2] = val;
-        page[o + 3] = 255;
+        if (page) {
+          const o = ((ly + t) * BLOCK_WIDTH + (lx + s)) * 4;
+          page[o] = val;
+          page[o + 1] = val;
+          page[o + 2] = val;
+          page[o + 3] = 255;
+        }
+        if (outRect) {
+          const o = (t * smax + s) * 4;
+          outRect[o] = val;
+          outRect[o + 1] = val;
+          outRect[o + 2] = val;
+          outRect[o + 3] = 255;
+        }
+      }
+    }
+  }
+
+  /**
+   * Force lightmap rebuild on next frame (after PF_lightstyle at spawn).
+   */
+  invalidateLightmapCache() {
+    for (const surf of this._lmSurfaces) {
+      surf.cached[0] = -1;
+      surf.cached[1] = -1;
+      surf.cached[2] = -1;
+      surf.cached[3] = -1;
+    }
+  }
+
+  /**
+   * R_AnimateLight + rebuild dirty lightmap blocks.
+   * @param {number} time
+   */
+  updateLightmaps(time) {
+    if (!this._lightStyles || !this._bsp || !this._lmSurfaces.length) return;
+    this._lightStyles.animate(time);
+    const values = this._lightStyles.values;
+    const bsp = this._bsp;
+    let scratch = null;
+    let scratchSize = 0;
+
+    for (const surf of this._lmSurfaces) {
+      let dirty = false;
+      for (let m = 0; m < 4; m++) {
+        const st = surf.styles[m];
+        if (st === 255) break;
+        if (values[st] !== surf.cached[m]) {
+          dirty = true;
+          break;
+        }
+      }
+      if (!dirty) continue;
+
+      const face = bsp.faces[surf.faceIndex];
+      const need = surf.smax * surf.tmax * 4;
+      if (!scratch || scratchSize < need) {
+        scratch = new Uint8Array(need);
+        scratchSize = need;
+      }
+      this._fillLightmap(
+        bsp,
+        face,
+        null,
+        surf.x,
+        surf.y,
+        surf.smax,
+        surf.tmax,
+        values,
+        scratch,
+      );
+      const tex = this._gpuLightmaps[surf.texnum];
+      if (tex) {
+        this._device.queue.writeTexture(
+          { texture: tex, origin: { x: surf.x, y: surf.y } },
+          scratch.subarray(0, need),
+          { bytesPerRow: surf.smax * 4 },
+          { width: surf.smax, height: surf.tmax },
+        );
+      }
+      for (let m = 0; m < 4; m++) {
+        const st = surf.styles[m];
+        if (st === 255) break;
+        surf.cached[m] = values[st];
       }
     }
   }
@@ -823,6 +973,7 @@ export class WorldRenderer {
    */
   draw(encoder, colorView, camera, width, height, time = 0, brushEntities = []) {
     if (!this._solidPipeline || !this._bsp) return;
+    this.updateLightmaps(time);
     this.ensureDepth(width, height);
 
     const bsp = this._bsp;
@@ -1018,6 +1169,7 @@ export class WorldRenderer {
     this._gpuTextures = [];
     for (const t of this._gpuLightmaps) t.destroy();
     this._gpuLightmaps = [];
+    this._lmSurfaces = [];
     this._skySolidTex?.destroy();
     this._skyAlphaTex?.destroy();
     this._skySolidTex = this._skyAlphaTex = null;

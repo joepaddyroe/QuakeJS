@@ -276,7 +276,10 @@ export function createBuiltins(ctx) {
     edicts.setInt(self, f.groundentity, 0);
     RETURN_FLOAT(1);
   };
-  builtins[35] = () => {}; // lightstyle
+  builtins[35] = () => {
+    // lightstyle(style, value)
+    ctx.server.setLightstyle(G_FLOAT(PARM(0)), G_STRING(PARM(1)));
+  };
   builtins[36] = () => {
     RETURN_FLOAT(Math.round(G_FLOAT(PARM(0))));
   };

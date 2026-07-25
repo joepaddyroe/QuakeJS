@@ -28,6 +28,7 @@ import { OFS_PARM0 } from '../progs/Progs.js';
 import { angleVectors } from '../math/QuakeMath.js';
 import { World } from './World.js';
 import { PLAYER_MINS, PLAYER_MAXS } from './PlayerMove.js';
+import { LightStyles } from '../render/LightStyles.js';
 
 /**
  * @param {string} data
@@ -73,11 +74,14 @@ export class Server {
    * @param {import('../fs/FileSystem.js').FileSystem} fs
    * @param {string} mapName
    * @param {import('../audio/SoundSystem.js').SoundSystem|null} [sound]
+   * @param {LightStyles|null} [lightStyles]
    */
-  constructor(bsp, fs, mapName, sound = null) {
+  constructor(bsp, fs, mapName, sound = null, lightStyles = null) {
     this.bsp = bsp;
     this.fs = fs;
     this.sound = sound;
+    this.lightStyles = lightStyles || new LightStyles();
+    this.lightStyles.clear();
     /** @type {import('../render/ParticleSystem.js').ParticleSystem|null} */
     this.particles = null;
     /**
@@ -304,6 +308,15 @@ export class Server {
     if (!this.sound || !sample) return;
     this.precacheSound(sample);
     this.sound.startStaticSound(sample, origin, vol, attenuation);
+  }
+
+  /**
+   * PF_lightstyle — set style string (also used by light entities).
+   * @param {number} style
+   * @param {string} value
+   */
+  setLightstyle(style, value) {
+    this.lightStyles.set(style | 0, value || '');
   }
 
   /**
