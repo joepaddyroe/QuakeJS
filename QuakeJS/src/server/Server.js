@@ -121,6 +121,8 @@ export class Server {
     /** Captured when intermission first becomes active. */
     this._completedTime = 0;
     this._wasIntermission = false;
+    /** Next time to advance view-weapon fire frames. */
+    this._weaponAnimNext = 0;
     this._spawnEntities();
     // Settle
     const saved = 0.1;
@@ -1124,6 +1126,61 @@ export class Server {
   }
 
   /**
+   * Advance view-weapon fire frames (player_shot1…6 → weaponframe 1–6).
+   * @param {number} [ent=1]
+   */
+  tickWeaponAnim(ent = 1) {
+    const f = this.progs.f;
+    const edicts = this.edicts;
+    if (edicts.free[ent]) return;
+    let frame = edicts.getFloat(ent, f.weaponframe) | 0;
+    if (frame <= 0) return;
+    if (this.time < this._weaponAnimNext) return;
+    this._weaponAnimNext = this.time + 0.1;
+    if (frame >= 6) {
+      edicts.setFloat(ent, f.weaponframe, 0);
+    } else {
+      edicts.setFloat(ent, f.weaponframe, frame + 1);
+    }
+  }
+
+  /**
+   * Local W_Attack shotgun stub: ammo, weaponframe anim, sound, hitscan.
+   * @param {number} attackerEnt
+   * @param {Float32Array|number[]} eye
+   * @param {number} pitch deg
+   * @param {number} yaw deg
+   * @returns {boolean} true if shot fired
+   */
+  playerAttack(attackerEnt, eye, pitch, yaw) {
+    const f = this.progs.f;
+    const edicts = this.edicts;
+    if (edicts.free[attackerEnt]) return false;
+    if ((edicts.getFloat(attackerEnt, f.health) | 0) <= 0) return false;
+
+    const af = f.attack_finished;
+    if (af >= 0 && this.time < edicts.getFloat(attackerEnt, af)) return false;
+    if ((edicts.getFloat(attackerEnt, f.weaponframe) | 0) > 0) return false;
+
+    let shells = edicts.getFloat(attackerEnt, f.ammo_shells) | 0;
+    if (shells <= 0) {
+      edicts.setFloat(attackerEnt, f.currentammo, 0);
+      return false;
+    }
+
+    shells -= 1;
+    edicts.setFloat(attackerEnt, f.ammo_shells, shells);
+    edicts.setFloat(attackerEnt, f.currentammo, shells);
+    edicts.setFloat(attackerEnt, f.weaponframe, 1);
+    this._weaponAnimNext = this.time + 0.1;
+    if (af >= 0) edicts.setFloat(attackerEnt, af, this.time + 0.5);
+
+    this.startSound(attackerEnt, 1, 'weapons/guncock.wav', 255, 1);
+    this.fireHitscan(attackerEnt, eye, pitch, yaw, 20);
+    return true;
+  }
+
+  /**
    * Shootable brushes (secret doors, health buttons): call th_pain / th_die.
    * @param {number} attackerEnt
    * @param {Float32Array|number[]} eye
@@ -1132,9 +1189,6 @@ export class Server {
    * @param {number} [damage=20]
    */
   fireHitscan(attackerEnt, eye, pitch, yaw, damage = 20) {
-    // Local stub until full W_Attack / weapon frames — Quake shotgun uses guncock
-    this.startSound(attackerEnt, 1, 'weapons/guncock.wav', 255, 1);
-
     const { forward } = angleVectors([pitch, yaw, 0]);
     const end = new Float32Array([
       eye[0] + forward[0] * 2048,

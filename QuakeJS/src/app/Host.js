@@ -281,8 +281,9 @@ export class Host {
           server.bumpOpenDoors(1, player.impactedEdicts);
           if (attackPressed) {
             const eye = player.eye();
-            server.fireHitscan(1, eye, player.pitch, player.yaw, 20);
+            server.playerAttack(1, eye, player.pitch, player.yaw);
           }
+          server.tickWeaponAnim(1);
         }
         server.physics(frameDt, player);
         if (!intermission) {

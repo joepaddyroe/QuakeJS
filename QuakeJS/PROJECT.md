@@ -53,7 +53,7 @@ If you are picking up this project with no chat history:
 5. Respect **§2–3** (SOLID + layers) before editing.
 6. After completing work, update **§12**, **§7**, and **§15 Changelog** in this file. Leave `README.md` alone unless the change is drastic for end users.
 
-**Current maturity (2026-07-25):** id1 PAK + BSP world + hull walk + stair smooth + QuakeC + brush draw/clip + changelevel + alias MDL + FP view weapon + status bar + Web Audio SFX + console/cvars + main menu + loading/intermission overlays. No loopback protocol yet.
+**Current maturity (2026-07-25):** id1 PAK + BSP world + hull walk + stair smooth + QuakeC + brush draw/clip + changelevel + alias MDL + FP shotgun (fire anim) + status bar + Web Audio SFX + console/cvars + main menu + loading/intermission overlays. No loopback protocol yet.
 
 ### Remaining tasks (priority order)
 
@@ -68,7 +68,7 @@ Use **§13** for file-level detail. Summary:
 | **P2** | Loopback client ↔ server + protocol | Not started |
 | **P2** | QuakeC VM (`pr_exec` / edicts / builtins) | Partial — spawn/think/touch/changelevel |
 | **P2** | Physics / movement (`sv_phys`, `world`) | Partial — walk + brush clip + PUSH |
-| **P3** | View weapon, particles, status bar, menu | Partial — view weapon + sbar + console + menu |
+| **P3** | View weapon, particles, status bar, menu | Partial — shotgun fire anim + sbar + console + menu |
 | **P3** | Sound (DMA-style mix → Web Audio) | Partial — SFX + spatialize |
 | **P4** | Saves, demos, console polish | Not started |
 | **P5** | QuakeWorld / multiplayer | Not started |
@@ -307,7 +307,7 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started
 - [x] Clip player against brush entities (`World.brushes` / submodel hulls)
 - [x] `changelevel` builtin + Host map reload (`e1m1` …)
 - [ ] Client connect via **loopback** (`net_loop`)
-- [ ] Fuller builtins + `PutClientInServer` (loadout stub for view weapon done)
+- [ ] Fuller builtins + `PutClientInServer` (loadout + shotgun fire anim stub done)
 
 ### Phase 5 — Client playable slice
 - [ ] `CL_SendCmd` / `SV_ClientThink` movement
@@ -411,7 +411,7 @@ Use this when choosing what to port next. Goal: **playable Quake 1 single-player
 | P2 | **Draw brush ents + entity clip** | Done | `WorldRenderer` + `World.brushes` · `SV_ClipMoveToEntity` |
 | P2 | **Changelevel / map load** | Done (no intermission UI) | `Host.changeMap`, builtin #70 · `host_cmd.c` |
 | P2 | **Loopback net + SV/CL connect** | Real Quake architecture | `net/NetLoop.js`, `Client.js` · `net_loop.c`, `sv_main.c`, `cl_main.c` |
-| P3 | **Alias + view weapon** | Partial — world MDL + FP shotgun | `AliasRenderer.js` · `gl_mesh.c`, `view.c` |
+| P3 | **Alias + view weapon** | Partial — FP shotgun + fire frames | `AliasRenderer.js`, `Server.playerAttack` · `gl_mesh.c`, `view.c` |
 | P3 | **Status bar + menu + console** | Partial — sbar + console + menu + overlays | `ui/*` · `sbar.c`, `console.c`, `menu.c`, `screen.c` |
 | P3 | **Sound** | Partial — SFX + spatialize | `audio/SoundSystem.js` · `snd_dma.c` |
 | P4 | **Particles, temp ents, sky polish** | Visual parity | `ParticleRenderer.js`, `ClientTempEnts.js` · `r_part.c`, `cl_tent.c` |
@@ -527,6 +527,7 @@ User supplies a legally obtained Quake `id1` directory (at least `pak0.pak`). Fi
 | 2026-07-25 | **Console:** `Cmd`/`Cvar` + DOM console (`); commands map/noclip/help/status; volume & sensitivity cvars |
 | 2026-07-25 | **Main menu:** `Menu` from gfx LMPs; Single Player → New Game; Options volume/sensitivity; Help; Quit stub |
 | 2026-07-25 | **Loading / intermission:** `ScreenOverlay` (`gfx/loading.lmp`, complete/inter/finale); map-change plaque; QC intermission stats |
+| 2026-07-25 | **Weapon fire anim:** shotgun `weaponframe` 1–6 (`v_shot.mdl`); ammo consume; `attack_finished` cooldown via `playerAttack` |
 
 ---
 

@@ -221,6 +221,7 @@ export class Progs {
       armorvalue: this.requireField('armorvalue'),
       waterlevel: this.requireField('waterlevel'),
       watertype: this.requireField('watertype'),
+      attack_finished: this.fieldByName.get('attack_finished')?.ofs ?? -1,
       ideal_yaw: this.fieldByName.get('ideal_yaw')?.ofs ?? -1,
       yaw_speed: this.fieldByName.get('yaw_speed')?.ofs ?? -1,
     };
