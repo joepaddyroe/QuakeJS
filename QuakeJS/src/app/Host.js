@@ -11,7 +11,8 @@ import { CvarStore } from '../core/Cvar.js';
 import { Console } from '../ui/Console.js';
 import { registerHostCommands } from '../ui/HostCmds.js';
 import { NetLoop } from '../net/NetLoop.js';
-import { Client } from '../client/Client.js';
+import { WebSocketNet } from '../net/WebSocketNet.js';
+import { Client, ca } from '../client/Client.js';
 import { CdAudio } from '../audio/CdAudio.js';
 import { readConfig, writeConfig } from './ConfigIO.js';
 import { saveGame, loadSaveHeader, applySaveToServer } from '../server/SaveGame.js';
@@ -79,6 +80,10 @@ export class Host {
     this.con = consoleUi || new Console(document.createElement('canvas'));
 
     this.net = new NetLoop();
+    /** @type {import('../net/WebSocketNet.js').WebSocketNet|null} */
+    this.remoteNet = null;
+    /** @type {'listen'|'client'|null} */
+    this.mpRole = null;
     this.client = new Client({
       net: this.net,
       hooks: {
@@ -292,6 +297,7 @@ export class Host {
     if (this.demoRecorder.recording) this.demoRecorder.stop();
     this.demoPlayer.stop();
     this.client.disconnect();
+    this.stopListen();
     this._cd.shutdown();
     window.removeEventListener('keydown', this._onKeyDown, true);
     this._initialized = false;
@@ -299,8 +305,10 @@ export class Host {
 
   /**
    * Connect client ↔ server over NetLoop after a map is loaded.
+   * Skipped when acting as a remote MP client (keeps WebSocket).
    */
   _connectLoopback() {
+    if (this.mpRole === 'client') return;
     const server = this._renderer.server;
     if (!server) return;
     this.client.disconnect();
@@ -316,8 +324,206 @@ export class Host {
         this._pointer.pitch = pose.pitch;
         this._pointer.yaw = pose.yaw;
       }
+      // Re-attach listen socket after map change
+      if (this.mpRole === 'listen' && this.remoteNet) {
+        server.attachRemoteNet(this.remoteNet, this.remoteNet.socket);
+      }
     }
     this.client.readPackets();
+  }
+
+  /**
+   * listen ws://host:port — host side of WebSocket relay (SP loopback kept).
+   * @param {string} url
+   * @returns {Promise<void>}
+   */
+  async listen(url) {
+    const server = this._renderer.server;
+    if (!server) {
+      this.con.print('Load a map before listen\n');
+      return;
+    }
+    this.stopListen();
+    if (this.mpRole === 'client') {
+      this.con.print('disconnect first\n');
+      return;
+    }
+    try {
+      this.remoteNet = await WebSocketNet.connect(url, 'server');
+      this.mpRole = 'listen';
+      server.attachRemoteNet(this.remoteNet, this.remoteNet.socket);
+      this.con.print(`listening on ${url}\n`);
+    } catch (err) {
+      this.remoteNet = null;
+      this.mpRole = null;
+      this.con.print(
+        `listen failed: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
+
+  /**
+   * connect ws://host:port — join a listening host via relay.
+   * @param {string} url
+   * @returns {Promise<void>}
+   */
+  async connect(url) {
+    this.stopListen();
+    try {
+      // Drop loopback; use WebSocket as the client net
+      this.client.disconnect();
+      this.remoteNet = await WebSocketNet.connect(url, 'client');
+      this.mpRole = 'client';
+      this.client.connectRemote(this.remoteNet);
+      this.con.print(`connecting to ${url}\n`);
+    } catch (err) {
+      this.remoteNet = null;
+      this.mpRole = null;
+      this.con.print(
+        `connect failed: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+      this._connectLoopback();
+    }
+  }
+
+  /** Stop listen / remote client WebSocket. */
+  stopListen() {
+    const server = this._renderer.server;
+    if (server) server.detachRemoteNet();
+    if (this.remoteNet) {
+      try {
+        this.remoteNet.disconnect();
+      } catch {
+        /* ignore */
+      }
+      this.remoteNet = null;
+    }
+    if (this.mpRole === 'listen' || this.mpRole === 'client') {
+      this.mpRole = null;
+    }
+  }
+
+  /**
+   * disconnect — leave remote / stop listen; restore loopback if map loaded.
+   */
+  disconnectMp() {
+    const wasClient = this.mpRole === 'client';
+    const wasListen = this.mpRole === 'listen';
+    const server = this._renderer.server;
+    if (server) server.detachRemoteNet();
+    if (this.remoteNet) {
+      try {
+        this.remoteNet.disconnect();
+      } catch {
+        /* ignore */
+      }
+      this.remoteNet = null;
+    }
+    this.mpRole = null;
+    if (wasClient) {
+      this.client.state = ca.disconnected;
+      this.client.socket = null;
+      this.con.print('Disconnected\n');
+      this._connectLoopback();
+    } else if (wasListen) {
+      this.con.print('listen stopped\n');
+    }
+  }
+
+  /**
+   * Remote client frame — usercmds to host + parse datagrams; no local SV.
+   * @param {number} dt
+   * @param {number} width
+   * @param {number} height
+   * @param {boolean} uiBlocking
+   */
+  _frameRemoteClient(dt, width, height, uiBlocking) {
+    const player = this._renderer.player;
+    const kb = this._keyboard;
+    const worldMode = this._renderer.mode === 'world';
+
+    if (worldMode && player && !uiBlocking) {
+      const jump = kb.isDown('Space');
+      const attack =
+        this._pointer.attack ||
+        kb.isDown('Mouse0') ||
+        kb.isDown('ControlLeft');
+      let forwardmove = 0;
+      let sidemove = 0;
+      let upmove = 0;
+      if (kb.isDown('KeyW') || kb.isDown('ArrowUp')) forwardmove += 400;
+      if (kb.isDown('KeyS') || kb.isDown('ArrowDown')) forwardmove -= 400;
+      if (kb.isDown('KeyA') || kb.isDown('ArrowLeft')) sidemove -= 350;
+      if (kb.isDown('KeyD') || kb.isDown('ArrowRight')) sidemove += 350;
+      if (jump) upmove += 200;
+      this.client.sendMove({
+        forwardmove,
+        sidemove,
+        upmove,
+        buttons: (attack ? 1 : 0) | (jump ? 2 : 0),
+        impulse: 0,
+        angles: [this._pointer.pitch, this._pointer.yaw, 0],
+      });
+      player.setAngles(this._pointer.pitch, this._pointer.yaw);
+      // Prefer host clientdata / entity pose when present
+      const ent = this.client.world.entities[1];
+      if (ent && (ent.origin[0] || ent.origin[1] || ent.origin[2])) {
+        player.origin[0] = ent.origin[0];
+        player.origin[1] = ent.origin[1];
+        player.origin[2] = ent.origin[2];
+        if (ent.angles[0] || ent.angles[1]) {
+          player.pitch = ent.angles[0];
+          player.yaw = ent.angles[1];
+          this._pointer.pitch = player.pitch;
+          this._pointer.yaw = player.yaw;
+        }
+      }
+      const punch = this.client.world.punchangle;
+      if (punch[0] || punch[1] || punch[2]) player.setPunchangle(punch);
+      if (this.client.world.viewheight) {
+        player.viewOfsZ = this.client.world.viewheight;
+      }
+    } else if (!uiBlocking) {
+      const cam = this._renderer.camera;
+      cam.setAngles(
+        (this._pointer.yaw * Math.PI) / 180,
+        (this._pointer.pitch * Math.PI) / 180,
+      );
+    }
+
+    this.client.readPackets();
+    this._cd.update();
+    this._overlay?.frame(dt);
+    this._renderer.frame(width, height, dt);
+    if (this._sound && worldMode && player) {
+      const eye = player.eye();
+      const { forward, right, up } = angleVectors([
+        this._pointer.pitch,
+        this._pointer.yaw,
+        0,
+      ]);
+      this._sound.update(eye, forward, right, up);
+    }
+    if (this._menu) this._menu.frame(dt);
+    this.con.frame(dt);
+    if (this._statusBar) {
+      const st = this.client.world.stats;
+      this._statusBar.draw(
+        worldMode && !uiBlocking
+          ? {
+              health: st.health,
+              armor: st.armor,
+              weapon: st.weapon,
+              ammo: st.ammo,
+              shells: st.shells,
+              nails: st.nails,
+              rockets: st.rockets,
+              cells: st.cells,
+              items: this.client.world.items,
+            }
+          : null,
+      );
+    }
   }
 
   openMenu() {
@@ -426,6 +632,16 @@ export class Host {
       this._runDemoPlayback(dt);
       this._renderer.frame(width, height, dt);
       this.con.frame(dt);
+      return;
+    }
+
+    if (this.mpRole === 'listen' && server) {
+      server.checkRemoteConnections();
+    }
+
+    // Remote MP client: send moves / parse host datagrams; no local SV authority
+    if (this.mpRole === 'client') {
+      this._frameRemoteClient(dt, width, height, uiBlocking);
       return;
     }
 

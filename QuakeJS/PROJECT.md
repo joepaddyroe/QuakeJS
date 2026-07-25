@@ -53,7 +53,7 @@ If you are picking up this project with no chat history:
 5. Respect **§2–3** (SOLID + layers) before editing.
 6. After completing work, update **§12**, **§7**, and **§15 Changelog** in this file. Leave `README.md` alone unless the change is drastic for end users.
 
-**Current maturity (2026-07-26):** id1 SP through Phase 8 — save/load `.sav`, demo record/play, `config.cfg` in localStorage. Phase 9 MP still open.
+**Current maturity (2026-07-26):** id1 SP through Phase 8; Phase 9 MVP — WebSocket relay + `listen`/`connect` (SP loopback unchanged). Full QW protocol still open.
 
 ### Remaining tasks (priority order)
 
@@ -71,7 +71,7 @@ Use **§13** for file-level detail. Summary:
 | **P3** | View weapon, particles, status bar, menu | Partial — shotgun + particles + sprites + sbar + conback + centerprint |
 | **P3** | Sound (DMA-style mix → Web Audio) | Partial — SFX + spatialize + CD stub |
 | **P4** | Saves, demos, console polish | Done — save/load + demos + config.cfg |
-| **P5** | QuakeWorld / multiplayer | Not started |
+| **P5** | QuakeWorld / multiplayer | Partial — WS relay + listen/connect; not full QW |
 
 ---
 
@@ -207,7 +207,7 @@ QuakeJS/
 │   │   └── models/             # BspModel, AliasModel, SpriteModel loaders (later)
 │   ├── audio/                  # SoundSystem → Web Audio (snd_dma / snd_mix)
 │   ├── ui/                     # Console, Menu, StatusBar, Draw 2D
-│   ├── net/                    # NetLoop (loopback), later WebSocket/UDP bridge
+│   ├── net/                    # NetLoop (loopback) + WebSocketNet (opt-in MP)
 │   └── platform/               # Canvas/WebGPU surface, keyboard, mouse, timers
 └── assets/                     # Optional id1/ (often gitignored; user-supplied PAK)
 ```
@@ -336,8 +336,9 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started
 - [x] Config / `autoexec.cfg` / `config.cfg` in `localStorage`
 
 ### Phase 9 — Multiplayer (opt-in; does not alter SP loopback path)
-- [ ] QuakeWorld or NetQuake protocol over WebSocket/WebRTC (separate milestone)
-- [ ] Do not require QW for single-player id1 completion
+- [x] NetQuake-style datagrams over WebSocket via `scripts/ws-relay.mjs` (`listen` / `connect` / `disconnect`)
+- [ ] Full QuakeWorld protocol / multi-slot clients / WebRTC (separate milestone)
+- [x] Do not require QW for single-player id1 completion
 
 ---
 
@@ -359,7 +360,7 @@ UI / console/menu    █████████░  ~90%   sbar + conback conso
 Audio                █████░░░░░  ~50%   Web Audio SFX + spatialize + CD stub
 Saves / demos        ███████░░░  ~70%   Quake .sav text + .dem record/play via localStorage
 Net (loopback)       ███████░░░  ~70%   NetLoop + SizeBuf + per-frame datagram
-Net (non-loopback)   ░░░░░░░░░░   0%
+Net (non-loopback)   ████░░░░░░  ~40%   WebSocketNet + ws-relay; fan-out; no multi-slot SV yet
 ```
 
 ### 12.2 Done well (vanilla parity acceptable)
@@ -420,7 +421,7 @@ Use this when choosing what to port next. Goal: **playable Quake 1 single-player
 | P3 | **Sound** | Partial — SFX + spatialize | `audio/SoundSystem.js` · `snd_dma.c` |
 | P4 | **Particles, temp ents, sky polish** | Partial — particles + sprites + lightstyles + dlights | `ParticleSystem.js`, `SpriteRenderer.js`, `LightStyles.js`, `DynamicLights.js` |
 | P4 | **Save / load / demos** | QoL | `HostCmds.js`, `ClientDemo.js` · `host_cmd.c`, `cl_demo.c` |
-| P5 | **QuakeWorld / MP** | Later | `../Quake-master/QW/` |
+| P5 | **QuakeWorld / MP** | Partial — WS relay listen/connect | `net/WebSocketNet.js`, `scripts/ws-relay.mjs` · `net_*.c` |
 
 ---
 
@@ -445,6 +446,7 @@ Use this when choosing what to port next. Goal: **playable Quake 1 single-player
 | Dynamic lights | `render/DynamicLights.js`, `WorldRenderer.js` · `cl_main.c`, `gl_rlight.c` |
 | Particles | `render/ParticleSystem.js` · `r_part.c` |
 | Loopback net | `net/NetLoop.js`, `net/SizeBuf.js` · `net_loop.c` |
+| WebSocket MP | `net/WebSocketNet.js`, `scripts/ws-relay.mjs` · opt-in listen/connect |
 | Client parse | `client/Client.js`, `client/ClientParse.js` · `cl_main.c`, `cl_parse.c` |
 | HUD | `ui/StatusBar.js`, `ui/ScreenOverlay.js`, `fs/WadFile.js` · `sbar.c`, `screen.c` |
 | Sound | `audio/SoundSystem.js` · `snd_dma.c`, `snd_mem.c` |
@@ -547,6 +549,7 @@ User supplies a legally obtained Quake `id1` directory (at least `pak0.pak`). Fi
 | 2026-07-25 | **Phase backlog sweep:** Host init/shutdown; id1 file picker; frustum `R_CullBox`; QC `PutClientInServer`; `clc_move` loopback; centerprint overlay; `CdAudio` stub; view bob |
 | 2026-07-26 | **Phase 5 client slice:** usercmd→PlayerMove; `svc_clientdata`/`spawnbaseline`/fast entity updates; punch+roll; `walkmove`/`movetogoal`/`checkclient`; PlayerPostThink |
 | 2026-07-26 | **Phase 8 persistence:** `config.cfg`/`autoexec.cfg` localStorage; Quake `.sav` save/load; `.dem` record + playdemo |
+| 2026-07-26 | **Phase 9 MP MVP:** `WebSocketNet` + `scripts/ws-relay.mjs`; `listen`/`connect`/`disconnect`; server fan-out; SP loopback unchanged |
 
 ---
 

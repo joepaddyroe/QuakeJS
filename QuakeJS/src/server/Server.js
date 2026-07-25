@@ -100,10 +100,15 @@ export class Server {
     this.datagram = new SizeBuf(8192);
     /** Reliable datagram (MSG_ALL) */
     this.reliable = new SizeBuf(8192);
-    /** @type {import('../net/NetLoop.js').NetLoop|null} */
+    /** @type {{ sendUnreliable: Function, sendReliable: Function, getMessage: Function }|null} */
     this.net = null;
-    /** @type {import('../net/NetLoop.js').LoopSocket|null} */
+    /** @type {{ receive: unknown[], canSend: boolean }|null} */
     this.netSocket = null;
+    /** Optional WebSocket (or other) net — fan-out only; SP loopback unchanged */
+    /** @type {{ sendUnreliable: Function, sendReliable: Function, getMessage: Function, checkNewConnections?: Function }|null} */
+    this.remoteNet = null;
+    /** @type {{ receive: unknown[], canSend: boolean }|null} */
+    this.remoteSocket = null;
     this.mapName = mapName.replace(/^maps\//, '').replace(/\.bsp$/i, '');
     this.world = new World(bsp);
     this.progs = new Progs(fs.load('progs.dat'));
@@ -404,8 +409,8 @@ export class Server {
 
   /**
    * Attach loopback socket after client connects.
-   * @param {import('../net/NetLoop.js').NetLoop} net
-   * @param {import('../net/NetLoop.js').LoopSocket} socket
+   * @param {{ sendUnreliable: Function, sendReliable: Function, getMessage: Function }} net
+   * @param {{ receive: unknown[], canSend: boolean }} socket
    * @returns {{ origin: Float32Array, pitch: number, yaw: number } | null}
    */
   attachNet(net, socket) {
@@ -426,6 +431,54 @@ export class Server {
     this.createBaselines();
     this.sendClientMessages();
     return this._clientSpawnPose(1);
+  }
+
+  /**
+   * Attach optional remote net (WebSocket relay). Does not replace loopback.
+   * @param {{ sendUnreliable: Function, sendReliable: Function, getMessage: Function, checkNewConnections?: Function }} net
+   * @param {{ receive: unknown[], canSend: boolean }} socket
+   */
+  attachRemoteNet(net, socket) {
+    this.remoteNet = net;
+    this.remoteSocket = socket;
+    this.writePrint('QuakeJS remote net listening\n');
+    this._writeSignonToReliable();
+    this.sendClientMessages();
+  }
+
+  /** Clear remote net (disconnect / stop listen). */
+  detachRemoteNet() {
+    this.remoteNet = null;
+    this.remoteSocket = null;
+  }
+
+  /**
+   * Accept pending remote peers and send late-join signon.
+   * @returns {boolean} true if a peer joined
+   */
+  checkRemoteConnections() {
+    if (!this.remoteNet?.checkNewConnections) return false;
+    const sock = this.remoteNet.checkNewConnections();
+    if (!sock) return false;
+    this.remoteSocket = sock;
+    this.writePrint('Remote client connected\n');
+    this._writeSignonToReliable();
+    this.reliable.writeByte(svc.stufftext);
+    this.reliable.writeString(`echo \"Joined QuakeJS host\"\nmap ${this.mapName}\n`);
+    this.sendClientMessages();
+    return true;
+  }
+
+  /** Lightstyles + baselines into reliable (late join / listen). */
+  _writeSignonToReliable() {
+    for (let i = 0; i < MAX_LIGHTSTYLES; i++) {
+      const ls = this.lightStyles.styles[i];
+      if (!ls.length) continue;
+      this.reliable.writeByte(svc.lightstyle);
+      this.reliable.writeByte(i);
+      this.reliable.writeString(ls.map);
+    }
+    this.createBaselines();
   }
 
   /**
@@ -539,10 +592,21 @@ export class Server {
 
   /**
    * SV_ReadClientMessage subset — clc_move / stringcmd.
+   * Local loopback applies moves; remote frames are drained only (no slot yet).
    */
   readClientMessages() {
-    if (!this.net || !this.netSocket) return;
-    while (this.net.getMessage(this.netSocket, this._clientMsg)) {
+    this._readClientMessagesFrom(this.net, this.netSocket, true);
+    this._readClientMessagesFrom(this.remoteNet, this.remoteSocket, false);
+  }
+
+  /**
+   * @param {{ getMessage: Function }|null} net
+   * @param {{ receive: unknown[] }|null} socket
+   * @param {boolean} applyMoves
+   */
+  _readClientMessagesFrom(net, socket, applyMoves) {
+    if (!net || !socket) return;
+    while (net.getMessage(socket, this._clientMsg)) {
       const msg = this._clientMsg;
       while (msg.remaining > 0) {
         const cmd = msg.readByte();
@@ -550,7 +614,18 @@ export class Server {
         if (cmd === clc.nop) continue;
         if (cmd === clc.disconnect) break;
         if (cmd === clc.move) {
-          this._readClientMove(msg);
+          if (applyMoves) this._readClientMove(msg);
+          else {
+            msg.readFloat();
+            msg.readAngle();
+            msg.readAngle();
+            msg.readAngle();
+            msg.readShort();
+            msg.readShort();
+            msg.readShort();
+            msg.readByte();
+            msg.readByte();
+          }
           continue;
         }
         if (cmd === clc.stringcmd) {
@@ -613,7 +688,7 @@ export class Server {
     const i = style | 0;
     const map = value || '';
     this.lightStyles.set(i, map);
-    if (this.netSocket) {
+    if (this.netSocket || this.remoteSocket) {
       this.reliable.writeByte(svc.lightstyle);
       this.reliable.writeByte(i);
       this.reliable.writeString(map);
@@ -664,10 +739,13 @@ export class Server {
 
   /**
    * SV_SendClientMessages / SV_SendClientDatagram subset.
+   * Fans out to loopback and optional remote net.
    * @returns {Uint8Array|null} unreliable frame bytes (for demo record)
    */
   sendClientMessages() {
-    if (!this.net || !this.netSocket) return null;
+    const hasLocal = !!(this.net && this.netSocket);
+    const hasRemote = !!(this.remoteNet && this.remoteSocket);
+    if (!hasLocal && !hasRemote) return null;
 
     const msg = this._frameMsg;
     msg.clear();
@@ -686,10 +764,12 @@ export class Server {
     if (msg.cursize > 0) {
       recorded = new Uint8Array(msg.cursize);
       recorded.set(msg.bytes());
-      this.net.sendUnreliable(this.netSocket, msg);
+      if (hasLocal) this.net.sendUnreliable(this.netSocket, msg);
+      if (hasRemote) this.remoteNet.sendUnreliable(this.remoteSocket, msg);
     }
     if (this.reliable.cursize > 0) {
-      this.net.sendReliable(this.netSocket, this.reliable);
+      if (hasLocal) this.net.sendReliable(this.netSocket, this.reliable);
+      if (hasRemote) this.remoteNet.sendReliable(this.remoteSocket, this.reliable);
       this.reliable.clear();
     }
     return recorded;

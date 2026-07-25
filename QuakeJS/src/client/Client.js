@@ -46,6 +46,19 @@ export class Client {
     this.hooks.print?.('Connected to loopback\n');
   }
 
+  /**
+   * Connect over a remote net driver (WebSocket).
+   * @param {{ socket: object, sendUnreliable: Function, getMessage: Function, disconnect: Function }} net
+   */
+  connectRemote(net) {
+    this.net = net;
+    this.socket = net.socket;
+    this.state = ca.connected;
+    this.movemessages = 0;
+    this.world.clear();
+    this.hooks.print?.('Connected to remote\n');
+  }
+
   disconnect() {
     this.state = ca.disconnected;
     this.socket = null;

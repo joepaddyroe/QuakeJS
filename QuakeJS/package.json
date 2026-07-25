@@ -1,0 +1,12 @@
+{
+  "name": "quakejs",
+  "private": true,
+  "type": "module",
+  "description": "Browser Quake 1 port (WebGPU) — optional WS relay for Phase 9 MP",
+  "scripts": {
+    "relay": "node scripts/ws-relay.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

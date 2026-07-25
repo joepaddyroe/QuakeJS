@@ -181,4 +181,24 @@ export function registerHostCommands({ cmd, cvars, con, host, sound }) {
       print(`ERROR: ${err instanceof Error ? err.message : String(err)}\n`);
     }
   });
+
+  cmd.add('listen', (args) => {
+    const url = args[1] || 'ws://localhost:27500';
+    print(`listen ${url}…\n`);
+    void host.listen(url);
+  });
+
+  cmd.add('connect', (args) => {
+    const url = args[1];
+    if (!url) {
+      print('connect <ws://host:port>\n');
+      return;
+    }
+    print(`connect ${url}…\n`);
+    void host.connect(url);
+  });
+
+  cmd.add('disconnect', () => {
+    host.disconnectMp();
+  });
 }
