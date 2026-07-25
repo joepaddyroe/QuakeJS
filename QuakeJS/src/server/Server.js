@@ -116,10 +116,16 @@ export class Server {
     /** @type {string|null} */
     this.pendingMap = null;
     this._changelevelIssued = false;
+    /** Server time when map became playable (for intermission clock). */
+    this.mapStartTime = this.time;
+    /** Captured when intermission first becomes active. */
+    this._completedTime = 0;
+    this._wasIntermission = false;
     this._spawnEntities();
     // Settle
     const saved = 0.1;
     for (let i = 0; i < 2; i++) this.physics(saved);
+    this.mapStartTime = this.time;
   }
 
   /**
@@ -140,6 +146,47 @@ export class Server {
     const ofs = this.progs.globalOfs.get('intermission_running');
     if (ofs === undefined) return false;
     return !!this.progs.globalsF[ofs];
+  }
+
+  /**
+   * Stats for Sbar_IntermissionOverlay.
+   * @returns {{
+   *   active: boolean,
+   *   finale: boolean,
+   *   completedTime: number,
+   *   secrets: number,
+   *   totalSecrets: number,
+   *   monsters: number,
+   *   totalMonsters: number,
+   * } | null}
+   */
+  getIntermissionInfo() {
+    const active = this.isIntermission();
+    if (active && !this._wasIntermission) {
+      this._completedTime = Math.max(0, this.time - this.mapStartTime);
+      this._wasIntermission = true;
+    }
+    if (!active) {
+      this._wasIntermission = false;
+      return null;
+    }
+    const gf = this.progs.globalsF;
+    const g = (name) => {
+      const ofs = this.progs.globalOfs.get(name);
+      return ofs === undefined ? 0 : gf[ofs] | 0;
+    };
+    // Episode finales set intermission without a normal next map in some paths;
+    // treat end* maps as finale when complete.lmp path still works either way.
+    const finale = /^end/i.test(this.mapName);
+    return {
+      active: true,
+      finale,
+      completedTime: this._completedTime | 0,
+      secrets: g('found_secrets'),
+      totalSecrets: g('total_secrets'),
+      monsters: g('killed_monsters'),
+      totalMonsters: g('total_monsters'),
+    };
   }
 
   /**

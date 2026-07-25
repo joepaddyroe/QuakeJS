@@ -23,6 +23,7 @@ export class Host {
    * @param {import('../ui/StatusBar.js').StatusBar} [deps.statusBar]
    * @param {import('../audio/SoundSystem.js').SoundSystem} [deps.sound]
    * @param {import('../ui/Menu.js').Menu} [deps.menu]
+   * @param {import('../ui/ScreenOverlay.js').ScreenOverlay} [deps.overlay]
    * @param {HTMLElement} [deps.consoleRoot]
    */
   constructor({
@@ -35,6 +36,7 @@ export class Host {
     statusBar = null,
     sound = null,
     menu = null,
+    overlay = null,
     consoleRoot = document.body,
   }) {
     this._canvas = canvas;
@@ -46,11 +48,13 @@ export class Host {
     this._statusBar = statusBar;
     this._sound = sound;
     this._menu = menu;
+    this._overlay = overlay;
     this._fpsAccum = 0;
     this._fpsFrames = 0;
     this._fps = 0;
     this._noclipWasDown = false;
     this._attackWasDown = false;
+    this._mapLoading = false;
 
     this.cmd = new Cmd();
     this.cvars = new CvarStore();
@@ -164,18 +168,28 @@ export class Host {
 
   /**
    * @param {string} mapName short name e.g. e1m1
+   * @returns {Promise<void>}
    */
-  changeMap(mapName) {
+  async changeMap(mapName) {
     const path = `maps/${mapName}.bsp`;
     if (!this._fs.has(path)) {
       this.con.print(`map not found: ${path}\n`);
       console.error(`[host] map not found: ${path}`);
       return;
     }
+    if (this._mapLoading) return;
+    this._mapLoading = true;
     this.con.print(`[host] loading ${path}\n`);
     console.info(`[host] loading ${path}`);
-    this._renderer.loadMap(this._fs, path, this._sound);
-    this.syncPointerFromCamera();
+    try {
+      if (this._overlay) await this._overlay.waitForPaint();
+      this._menu?.close();
+      this._renderer.loadMap(this._fs, path, this._sound);
+      this.syncPointerFromCamera();
+    } finally {
+      this._overlay?.hideLoading();
+      this._mapLoading = false;
+    }
   }
 
   /**
@@ -194,7 +208,12 @@ export class Host {
     if (server?.pendingMap) {
       const map = server.pendingMap;
       server.pendingMap = null;
-      this.changeMap(map);
+      void this.changeMap(map);
+      return;
+    }
+
+    if (this._mapLoading || this._overlay?.isLoading) {
+      this._renderer.frame(width, height, 0);
       return;
     }
 
@@ -324,9 +343,16 @@ export class Host {
 
     if (this._menu) this._menu.frame(dt);
 
+    const interInfo = server ? server.getIntermissionInfo() : null;
+    if (this._overlay) {
+      if (!this._overlay.isLoading) {
+        this._overlay.drawIntermission(interInfo);
+      }
+    }
+
     if (this._statusBar) {
       const stats =
-        worldMode && server && !intermission && !menuOpen
+        worldMode && server && !intermission && !menuOpen && !interInfo?.active
           ? server.getClientStats(1)
           : null;
       this._statusBar.draw(stats);
@@ -342,6 +368,13 @@ export class Host {
 
     if (menuOpen) {
       this._hud.textContent = '';
+      return;
+    }
+
+    if (intermission) {
+      this._hud.textContent =
+        `Level complete\n` +
+        `click / jump to continue`;
       return;
     }
 

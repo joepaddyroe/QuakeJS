@@ -53,7 +53,7 @@ If you are picking up this project with no chat history:
 5. Respect **§2–3** (SOLID + layers) before editing.
 6. After completing work, update **§12**, **§7**, and **§15 Changelog** in this file. Leave `README.md` alone unless the change is drastic for end users.
 
-**Current maturity (2026-07-25):** id1 PAK + BSP world + hull walk + stair smooth + QuakeC + brush draw/clip + changelevel + alias MDL + FP view weapon + status bar + Web Audio SFX + console/cvars + main menu. No loopback protocol yet.
+**Current maturity (2026-07-25):** id1 PAK + BSP world + hull walk + stair smooth + QuakeC + brush draw/clip + changelevel + alias MDL + FP view weapon + status bar + Web Audio SFX + console/cvars + main menu + loading/intermission overlays. No loopback protocol yet.
 
 ### Remaining tasks (priority order)
 
@@ -319,7 +319,7 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started
 - [x] Console + cvars + commands (`cmd`, `cvar`, `console`, `keys`) — basic overlay
 - [x] Menus (`menu.c`) — main / singleplayer / options / help / quit
 - [x] Status bar (`sbar.c`) — health / armor / ammo / face + inventory strip
-- [ ] Loading plaque / intermission / finale messages
+- [x] Loading plaque / intermission / finale messages
 
 ### Phase 7 — Audio
 - [x] SFX from PAK (`sound/*.wav`) via Web Audio
@@ -351,7 +351,7 @@ WebGPU render        ███████░░░  ~78%   world+brush+alias+vi
 Server / world       ███████░░░  ~65%   hull walk + pushers + brush clip
 QuakeC VM            ██████░░░░  ~55%   exec+edicts+builtins; doors/triggers on start
 Client / protocol    ░░░░░░░░░░   0%   view weapon pose via local edict stub
-UI / console/menu    ███████░░░  ~70%   sbar + console + main menu; no load/save UI
+UI / console/menu    ████████░░  ~80%   sbar + console + menu + loading/intermission
 Audio                ████░░░░░░  ~40%   Web Audio SFX + Quake spatialize; no DMA mix / CD
 Saves / demos        ░░░░░░░░░░   0%
 Net (non-loopback)   ░░░░░░░░░░   0%
@@ -412,7 +412,7 @@ Use this when choosing what to port next. Goal: **playable Quake 1 single-player
 | P2 | **Changelevel / map load** | Done (no intermission UI) | `Host.changeMap`, builtin #70 · `host_cmd.c` |
 | P2 | **Loopback net + SV/CL connect** | Real Quake architecture | `net/NetLoop.js`, `Client.js` · `net_loop.c`, `sv_main.c`, `cl_main.c` |
 | P3 | **Alias + view weapon** | Partial — world MDL + FP shotgun | `AliasRenderer.js` · `gl_mesh.c`, `view.c` |
-| P3 | **Status bar + menu + console** | Partial — sbar + console + menu | `ui/StatusBar.js`, `ui/Console.js`, `ui/Menu.js` · `sbar.c`, `console.c`, `menu.c` |
+| P3 | **Status bar + menu + console** | Partial — sbar + console + menu + overlays | `ui/*` · `sbar.c`, `console.c`, `menu.c`, `screen.c` |
 | P3 | **Sound** | Partial — SFX + spatialize | `audio/SoundSystem.js` · `snd_dma.c` |
 | P4 | **Particles, temp ents, sky polish** | Visual parity | `ParticleRenderer.js`, `ClientTempEnts.js` · `r_part.c`, `cl_tent.c` |
 | P4 | **Save / load / demos** | QoL | `HostCmds.js`, `ClientDemo.js` · `host_cmd.c`, `cl_demo.c` |
@@ -436,7 +436,7 @@ Use this when choosing what to port next. Goal: **playable Quake 1 single-player
 | Render one frame | `render/WebGpuRenderer.js` · `gl_rmain.c` / `SCR_UpdateScreen` |
 | Brush surfaces / lightmaps | `render/WorldRenderer.js` · `gl_rsurf.c` |
 | Alias / weapon model | `render/AliasRenderer.js` · `gl_mesh.c` |
-| HUD | `ui/StatusBar.js`, `fs/WadFile.js` · `sbar.c` |
+| HUD | `ui/StatusBar.js`, `ui/ScreenOverlay.js`, `fs/WadFile.js` · `sbar.c`, `screen.c` |
 | Sound | `audio/SoundSystem.js` · `snd_dma.c`, `snd_mem.c` |
 | Menus | `ui/Menu.js`, `ui/DrawPics.js` · `menu.c` |
 | Console / cvars | `ui/Console.js`, `core/Cvar.js`, `core/Cmd.js`, `ui/HostCmds.js` · `console.c`, `cvar.c`, `cmd.c` |
@@ -526,6 +526,7 @@ User supplies a legally obtained Quake `id1` directory (at least `pak0.pak`). Fi
 | 2026-07-25 | **Sound:** `SoundSystem` (Web Audio); `sound`/`precache_sound`/`ambientsound` builtins; Quake L/R spatialize; shotgun stub SFX |
 | 2026-07-25 | **Console:** `Cmd`/`Cvar` + DOM console (`); commands map/noclip/help/status; volume & sensitivity cvars |
 | 2026-07-25 | **Main menu:** `Menu` from gfx LMPs; Single Player → New Game; Options volume/sensitivity; Help; Quit stub |
+| 2026-07-25 | **Loading / intermission:** `ScreenOverlay` (`gfx/loading.lmp`, complete/inter/finale); map-change plaque; QC intermission stats |
 
 ---
 

@@ -12,6 +12,7 @@ import { PointerLook } from './platform/PointerLook.js';
 import { WebGpuRenderer } from './render/WebGpuRenderer.js';
 import { StatusBar } from './ui/StatusBar.js';
 import { Menu } from './ui/Menu.js';
+import { ScreenOverlay } from './ui/ScreenOverlay.js';
 
 /**
  * @param {string} message
@@ -27,9 +28,10 @@ async function main() {
   const canvas = /** @type {HTMLCanvasElement|null} */ (document.getElementById('viewport'));
   const sbarCanvas = /** @type {HTMLCanvasElement|null} */ (document.getElementById('sbar'));
   const menuCanvas = /** @type {HTMLCanvasElement|null} */ (document.getElementById('menu'));
+  const overlayCanvas = /** @type {HTMLCanvasElement|null} */ (document.getElementById('overlay'));
   const hud = document.getElementById('hud');
-  if (!canvas || !hud || !sbarCanvas || !menuCanvas) {
-    throw new Error('Missing #viewport, #sbar, #menu, or #hud');
+  if (!canvas || !hud || !sbarCanvas || !menuCanvas || !overlayCanvas) {
+    throw new Error('Missing #viewport, #sbar, #menu, #overlay, or #hud');
   }
 
   let gpu;
@@ -74,7 +76,7 @@ async function main() {
 
   const menu = new Menu(menuCanvas, {
     onNewGame: (map) => {
-      hostRef?.changeMap(map);
+      void hostRef?.changeMap(map);
     },
     playSound: (sample) => sound.playLocal(sample),
     getVolume: () => hostRef?.cvars.value('volume') ?? 0.7,
@@ -93,6 +95,13 @@ async function main() {
     await menu.load(fs);
   } catch (err) {
     console.warn('Menu load failed:', err);
+  }
+
+  const overlay = new ScreenOverlay(overlayCanvas);
+  try {
+    await overlay.load(fs);
+  } catch (err) {
+    console.warn('Screen overlay load failed:', err);
   }
 
   const mapCandidates = ['maps/start.bsp', 'maps/e1m1.bsp'];
@@ -123,6 +132,7 @@ async function main() {
     statusBar,
     sound,
     menu,
+    overlay,
   });
   hostRef = host;
   host.syncPointerFromCamera();

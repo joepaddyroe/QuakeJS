@@ -97,6 +97,19 @@
       display: none;
       z-index: 15;
     }
+    #overlay {
+      position: fixed;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      width: min(100vw, 640px);
+      height: auto;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      pointer-events: none;
+      display: none;
+      z-index: 12;
+    }
     #hud .dim { color: #7a766c; }
     #error {
       display: none;
@@ -117,6 +130,7 @@
 <body>
   <canvas id="viewport"></canvas>
   <canvas id="sbar"></canvas>
+  <canvas id="overlay"></canvas>
   <canvas id="menu"></canvas>
   <div id="hud"></div>
   <div id="error"></div>
