@@ -6,8 +6,8 @@ import { DemoRoomRenderer } from './DemoRoomRenderer.js';
 import { FlyCamera } from './FlyCamera.js';
 import { WorldRenderer } from './WorldRenderer.js';
 import { BspModel } from './models/BspModel.js';
-import { World } from '../server/World.js';
 import { PlayerMove } from '../server/PlayerMove.js';
+import { Server } from '../server/Server.js';
 
 export class WebGpuRenderer {
   /**
@@ -20,8 +20,10 @@ export class WebGpuRenderer {
     this._demoCamera = new FlyCamera();
     /** @type {PlayerMove|null} */
     this.player = null;
-    /** @type {World|null} */
+    /** @type {import('../server/World.js').World|null} */
     this.collision = null;
+    /** @type {Server|null} */
+    this.server = null;
     /** @type {'demo'|'world'} */
     this.mode = 'demo';
     this.mapName = '';
@@ -51,7 +53,8 @@ export class WebGpuRenderer {
     const palette = fs.loadPalette();
     const bsp = new BspModel(data, mapPath);
     this._worldRend.buildFromBsp(bsp, palette);
-    this.collision = new World(bsp);
+    this.server = new Server(bsp, fs, mapPath);
+    this.collision = this.server.world;
     this.player = new PlayerMove(this.collision);
     this.mode = 'world';
     this.mapName = mapPath;
@@ -84,6 +87,7 @@ export class WebGpuRenderer {
     const colorView = context.getCurrentTexture().createView();
     const encoder = device.createCommandEncoder();
     if (this.mode === 'world' && this.player) {
+      const brushes = this.server ? this.server.getBrushDrawList() : [];
       this._worldRend.draw(
         encoder,
         colorView,
@@ -91,6 +95,7 @@ export class WebGpuRenderer {
         width,
         height,
         this._time,
+        brushes,
       );
       this.visibleFaces = this._worldRend.visibleFaces;
       this.viewLeaf = this._worldRend.viewLeaf;

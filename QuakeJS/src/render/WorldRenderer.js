@@ -3,7 +3,7 @@
  * PVS-culled solids (texture × lightmap) + sky layers + turb water.
  */
 
-import { mat4LookAt, mat4Multiply, mat4Perspective } from '../math/Mat4.js';
+import { mat4LookAt, mat4Multiply, mat4Perspective, mat4Translate } from '../math/Mat4.js';
 
 const BLOCK_WIDTH = 128;
 const BLOCK_HEIGHT = 128;
@@ -481,12 +481,9 @@ export class WorldRenderer {
     this._bsp = bsp;
     this.mapName = bsp.name;
     const device = this._device;
-    const world = bsp.submodels[0];
-    if (!world) throw new Error('BSP has no world submodel');
+    if (!bsp.submodels.length) throw new Error('BSP has no submodels');
 
     const lmAlloc = new LightmapAllocator();
-    const first = world.firstface;
-    const last = first + world.numfaces;
 
     /** @type {Map<number, GPUTexture>} */
     const texCache = new Map();
@@ -504,6 +501,11 @@ export class WorldRenderer {
     const skyFaces = [];
     /** @type {FaceDraw[]} */
     const turbFaces = [];
+
+    /** @type {number[][]} solid face indices per submodel */
+    this._subSolidFaces = bsp.submodels.map(() => []);
+    /** @type {number[][]} */
+    this._subTurbFaces = bsp.submodels.map(() => []);
 
     // Sky textures
     let skySrc = null;
@@ -538,108 +540,105 @@ export class WorldRenderer {
     let faces = 0;
     let tris = 0;
 
-    for (let fi = first; fi < last; fi++) {
-      const face = bsp.faces[fi];
-      if (face.kind === 'skip' || face.numEdges < 3) continue;
-      const ti = bsp.texinfo[face.texinfo];
-      const tex = bsp.textures[ti.miptex];
-      if (!tex || !tex.pixels) continue;
+    for (let smi = 0; smi < bsp.submodels.length; smi++) {
+      const sm = bsp.submodels[smi];
+      const first = sm.firstface;
+      const last = first + sm.numfaces;
 
-      const verts = bsp.faceVerts(face);
+      for (let fi = first; fi < last; fi++) {
+        const face = bsp.faces[fi];
+        if (face.kind === 'skip' || face.numEdges < 3) continue;
+        const ti = bsp.texinfo[face.texinfo];
+        const tex = bsp.textures[ti.miptex];
+        if (!tex || !tex.pixels) continue;
 
-      if (face.kind === 'solid') {
-        const smax = (face.extents[0] >> 4) + 1;
-        const tmax = (face.extents[1] >> 4) + 1;
-        const block = lmAlloc.alloc(smax, tmax);
-        face.lightS = block.x;
-        face.lightT = block.y;
-        face.lightmapIndex = block.texnum;
-        this._fillLightmap(bsp, face, lmAlloc.pages[block.texnum], block.x, block.y, smax, tmax);
+        const verts = bsp.faceVerts(face);
 
-        const key = `${ti.miptex}:${face.lightmapIndex}`;
-        let bg = solidBgCache.get(key);
-        if (!bg) {
-          let gpuTex = texCache.get(ti.miptex);
-          if (!gpuTex) {
-            gpuTex = this._uploadRgba(
-              expandIndexed(palette, tex.pixels, tex.width, tex.height),
-              tex.width,
-              tex.height,
-            );
-            texCache.set(ti.miptex, gpuTex);
-            this._gpuTextures.push(gpuTex);
+        if (face.kind === 'solid') {
+          const smax = (face.extents[0] >> 4) + 1;
+          const tmax = (face.extents[1] >> 4) + 1;
+          const block = lmAlloc.alloc(smax, tmax);
+          face.lightS = block.x;
+          face.lightT = block.y;
+          face.lightmapIndex = block.texnum;
+          this._fillLightmap(bsp, face, lmAlloc.pages[block.texnum], block.x, block.y, smax, tmax);
+
+          const key = `${ti.miptex}:${face.lightmapIndex}`;
+          if (!solidBgCache.has(key)) solidBgCache.set(key, null);
+
+          const firstVert = solidFloats.length / 7;
+          for (let i = 1; i < verts.length - 1; i++) {
+            this._pushSolid(solidFloats, verts[0], face, ti, tex, block);
+            this._pushSolid(solidFloats, verts[i], face, ti, tex, block);
+            this._pushSolid(solidFloats, verts[i + 1], face, ti, tex, block);
+            tris += 1;
           }
-          // lightmaps uploaded after loop — placeholder, rebuild bg below
-          solidBgCache.set(key, null);
-        }
-
-        const firstVert = solidFloats.length / 7;
-        for (let i = 1; i < verts.length - 1; i++) {
-          this._pushSolid(solidFloats, verts[0], face, ti, tex, block);
-          this._pushSolid(solidFloats, verts[i], face, ti, tex, block);
-          this._pushSolid(solidFloats, verts[i + 1], face, ti, tex, block);
-          tris += 1;
-        }
-        solidFaces.push({
-          firstVert,
-          vertCount: (verts.length - 2) * 3,
-          bindGroup: null,
-          _key: key,
-          _miptex: ti.miptex,
-          _lm: face.lightmapIndex,
-        });
-        faces += 1;
-      } else if (face.kind === 'sky') {
-        if (!this._skySolidBg) continue;
-        const firstVert = skyFloats.length / 3;
-        for (let i = 1; i < verts.length - 1; i++) {
-          skyFloats.push(verts[0][0], verts[0][1], verts[0][2]);
-          skyFloats.push(verts[i][0], verts[i][1], verts[i][2]);
-          skyFloats.push(verts[i + 1][0], verts[i + 1][1], verts[i + 1][2]);
-          tris += 1;
-        }
-        skyFaces.push({
-          firstVert,
-          vertCount: (verts.length - 2) * 3,
-          bindGroup: this._skySolidBg,
-        });
-        faces += 1;
-      } else if (face.kind === 'turb') {
-        let bg = turbBgCache.get(ti.miptex);
-        if (!bg) {
-          let gpuTex = texCache.get(ti.miptex);
-          if (!gpuTex) {
-            gpuTex = this._uploadRgba(
-              expandIndexed(palette, tex.pixels, tex.width, tex.height),
-              tex.width,
-              tex.height,
-            );
-            texCache.set(ti.miptex, gpuTex);
-            this._gpuTextures.push(gpuTex);
-          }
-          bg = device.createBindGroup({
-            layout: this._turbLayout,
-            entries: [
-              { binding: 0, resource: { buffer: this._turbUniform } },
-              { binding: 1, resource: this._sampler },
-              { binding: 2, resource: gpuTex.createView() },
-            ],
+          solidFaces.push({
+            firstVert,
+            vertCount: (verts.length - 2) * 3,
+            bindGroup: null,
+            _key: key,
+            _miptex: ti.miptex,
+            _lm: face.lightmapIndex,
+            _face: fi,
           });
-          turbBgCache.set(ti.miptex, bg);
+          this._subSolidFaces[smi].push(fi);
+          faces += 1;
+        } else if (face.kind === 'sky') {
+          if (!this._skySolidBg || smi !== 0) continue;
+          const firstVert = skyFloats.length / 3;
+          for (let i = 1; i < verts.length - 1; i++) {
+            skyFloats.push(verts[0][0], verts[0][1], verts[0][2]);
+            skyFloats.push(verts[i][0], verts[i][1], verts[i][2]);
+            skyFloats.push(verts[i + 1][0], verts[i + 1][1], verts[i + 1][2]);
+            tris += 1;
+          }
+          skyFaces.push({
+            firstVert,
+            vertCount: (verts.length - 2) * 3,
+            bindGroup: this._skySolidBg,
+            _face: fi,
+          });
+          faces += 1;
+        } else if (face.kind === 'turb') {
+          let bg = turbBgCache.get(ti.miptex);
+          if (!bg) {
+            let gpuTex = texCache.get(ti.miptex);
+            if (!gpuTex) {
+              gpuTex = this._uploadRgba(
+                expandIndexed(palette, tex.pixels, tex.width, tex.height),
+                tex.width,
+                tex.height,
+              );
+              texCache.set(ti.miptex, gpuTex);
+              this._gpuTextures.push(gpuTex);
+            }
+            bg = device.createBindGroup({
+              layout: this._turbLayout,
+              entries: [
+                { binding: 0, resource: { buffer: this._turbUniform } },
+                { binding: 1, resource: this._sampler },
+                { binding: 2, resource: gpuTex.createView() },
+              ],
+            });
+            turbBgCache.set(ti.miptex, bg);
+          }
+          const firstVert = turbFloats.length / 5;
+          for (let i = 1; i < verts.length - 1; i++) {
+            this._pushTurb(turbFloats, verts[0], ti);
+            this._pushTurb(turbFloats, verts[i], ti);
+            this._pushTurb(turbFloats, verts[i + 1], ti);
+            tris += 1;
+          }
+          turbFaces.push({
+            firstVert,
+            vertCount: (verts.length - 2) * 3,
+            bindGroup: bg,
+            _face: fi,
+          });
+          this._subTurbFaces[smi].push(fi);
+          faces += 1;
         }
-        const firstVert = turbFloats.length / 5;
-        for (let i = 1; i < verts.length - 1; i++) {
-          this._pushTurb(turbFloats, verts[0], ti);
-          this._pushTurb(turbFloats, verts[i], ti);
-          this._pushTurb(turbFloats, verts[i + 1], ti);
-          tris += 1;
-        }
-        turbFaces.push({
-          firstVert,
-          vertCount: (verts.length - 2) * 3,
-          bindGroup: bg,
-        });
-        faces += 1;
       }
     }
 
@@ -698,19 +697,17 @@ export class WorldRenderer {
     /** @type {Map<number, FaceDraw>} */
     this._turbByFace = new Map();
 
-    // Rebuild face→draw maps by re-walking (same order)
-    let si = 0;
-    let ski = 0;
-    let ti = 0;
-    for (let fi = first; fi < last; fi++) {
-      const face = bsp.faces[fi];
-      if (face.kind === 'solid' && si < solidFaces.length) {
-        this._solidByFace.set(fi, solidFaces[si++]);
-      } else if (face.kind === 'sky' && this._skySolidBg && ski < skyFaces.length) {
-        this._skyByFace.set(fi, skyFaces[ski++]);
-      } else if (face.kind === 'turb' && ti < turbFaces.length) {
-        this._turbByFace.set(fi, turbFaces[ti++]);
-      }
+    for (const fd of solidFaces) {
+      this._solidByFace.set(fd._face, fd);
+      delete fd._face;
+    }
+    for (const fd of skyFaces) {
+      this._skyByFace.set(fd._face, fd);
+      delete fd._face;
+    }
+    for (const fd of turbFaces) {
+      this._turbByFace.set(fd._face, fd);
+      delete fd._face;
     }
 
     this.faceCount = faces;
@@ -818,8 +815,9 @@ export class WorldRenderer {
    * @param {number} width
    * @param {number} height
    * @param {number} time  seconds (host realtime)
+   * @param {{ submodel: number, origin: Float32Array }[]} [brushEntities]
    */
-  draw(encoder, colorView, camera, width, height, time = 0) {
+  draw(encoder, colorView, camera, width, height, time = 0, brushEntities = []) {
     if (!this._solidPipeline || !this._bsp) return;
     this.ensureDepth(width, height);
 
@@ -868,7 +866,7 @@ export class WorldRenderer {
       },
     });
 
-    // Solids
+    // World solids (PVS)
     if (this._solidVbo && this._solidOut.length) {
       pass.setPipeline(this._solidPipeline);
       pass.setVertexBuffer(0, this._solidVbo);
@@ -898,7 +896,6 @@ export class WorldRenderer {
         pass.draw(fd.vertCount, 1, fd.firstVert, 0);
       }
 
-      // Alpha overlay
       speed = (time * 16) % 128;
       skyU[19] = speed;
       this._device.queue.writeBuffer(this._skyUniform, 0, skyU);
@@ -929,6 +926,46 @@ export class WorldRenderer {
     }
 
     pass.end();
+
+    // Brush entities need their own passes — WebGPU forbids buffer writes mid-pass
+    if (this._solidVbo && brushEntities.length) {
+      for (const be of brushEntities) {
+        const faces = this._subSolidFaces[be.submodel];
+        if (!faces || !faces.length) continue;
+        const model = mat4Translate(be.origin[0], be.origin[1], be.origin[2]);
+        solidU.set(mat4Multiply(viewProj, model));
+        this._device.queue.writeBuffer(this._solidUniform, 0, solidU);
+
+        const bpass = encoder.beginRenderPass({
+          colorAttachments: [
+            {
+              view: colorView,
+              loadOp: 'load',
+              storeOp: 'store',
+            },
+          ],
+          depthStencilAttachment: {
+            view: this._depthView,
+            depthLoadOp: 'load',
+            depthStoreOp: 'store',
+          },
+        });
+        bpass.setPipeline(this._solidPipeline);
+        bpass.setVertexBuffer(0, this._solidVbo);
+        let lastBg = null;
+        for (const fi of faces) {
+          const fd = this._solidByFace.get(fi);
+          if (!fd) continue;
+          if (fd.bindGroup !== lastBg) {
+            bpass.setBindGroup(0, fd.bindGroup);
+            lastBg = fd.bindGroup;
+          }
+          bpass.draw(fd.vertCount, 1, fd.firstVert, 0);
+          this.visibleFaces += 1;
+        }
+        bpass.end();
+      }
+    }
   }
 
   destroyMeshes() {

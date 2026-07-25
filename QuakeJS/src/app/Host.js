@@ -1,9 +1,10 @@
 /**
  * Host shell — eventually matches host.c (Init / Frame / Shutdown).
- * Phase 2 scaffold: clipped player walk (World hull1 + PlayerMove).
+ * Phase 2 scaffold: clipped player walk + QuakeC server tick.
  */
 
 import { syncCanvasSize } from '../platform/GpuDevice.js';
+import { PLAYER_MINS, PLAYER_MAXS } from '../server/PlayerMove.js';
 
 export class Host {
   /**
@@ -54,6 +55,12 @@ export class Host {
     this._noclipWasDown = nDown;
 
     if (worldMode && player) {
+      const server = this._renderer.server;
+      // Clip against doors/walls/bossgates (world hull alone has holes under brush floors)
+      if (server && this._renderer.collision) {
+        this._renderer.collision.brushes = server.getBrushDrawList();
+      }
+
       player.setAngles(this._pointer.pitch, this._pointer.yaw);
       player.update(dt, {
         forward: kb.isDown('KeyW') || kb.isDown('ArrowUp'),
@@ -66,6 +73,26 @@ export class Host {
       });
       this._pointer.yaw = player.yaw;
       this._pointer.pitch = player.pitch;
+
+      if (server) {
+        const frameDt = Math.min(dt, 0.1);
+        server.physics(frameDt);
+        server.syncClientEdict(1, {
+          origin: player.origin,
+          velocity: player.velocity,
+          pitch: player.pitch,
+          yaw: player.yaw,
+          mins: PLAYER_MINS,
+          maxs: PLAYER_MAXS,
+          onground: player.onground,
+        });
+        server.touchTriggers(player.origin, PLAYER_MINS, PLAYER_MAXS, 1);
+        const applied = server.applyClientEdict(1, player);
+        if (applied.fixangle) {
+          this._pointer.yaw = applied.yaw;
+          this._pointer.pitch = applied.pitch;
+        }
+      }
     } else {
       const cam = this._renderer.camera;
       cam.setAngles(
@@ -107,6 +134,7 @@ export class Host {
         `vis ${this._renderer.visibleFaces}  leaf ${this._renderer.viewLeaf}\n` +
         `\n` +
         `WASD move   Space jump   N noclip\n` +
+        `QC entities active\n` +
         `${lockHint}`;
     } else {
       this._hud.textContent =

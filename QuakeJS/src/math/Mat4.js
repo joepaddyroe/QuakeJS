@@ -103,3 +103,18 @@ export function mat4Multiply(a, b) {
   }
   return out;
 }
+
+/**
+ * Translation matrix (column-major).
+ * @param {number} x
+ * @param {number} y
+ * @param {number} z
+ * @returns {Float32Array}
+ */
+export function mat4Translate(x, y, z) {
+  const out = mat4Identity();
+  out[12] = x;
+  out[13] = y;
+  out[14] = z;
+  return out;
+}

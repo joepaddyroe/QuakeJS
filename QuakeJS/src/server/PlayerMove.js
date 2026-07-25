@@ -16,8 +16,8 @@ const JUMP_IMPULSE = 270;
 const VIEW_OFS_Z = 22;
 const MAX_CLIP_PLANES = 5;
 
-const PLAYER_MINS = new Float32Array([-16, -16, -24]);
-const PLAYER_MAXS = new Float32Array([16, 16, 32]);
+export const PLAYER_MINS = new Float32Array([-16, -16, -24]);
+export const PLAYER_MAXS = new Float32Array([16, 16, 32]);
 
 /**
  * @param {Float32Array} inVel
@@ -56,6 +56,8 @@ export class PlayerMove {
     this.noclip = false;
     this.jumpReleased = true;
     this.viewOfsZ = VIEW_OFS_Z;
+    /** Stair smooth Z (view.c oldz) — tracks origin[2] with lag on step-ups */
+    this._smoothZ = 0;
   }
 
   /**
@@ -71,17 +73,18 @@ export class PlayerMove {
     this.velocity[0] = this.velocity[1] = this.velocity[2] = 0;
     this.onground = false;
     this.jumpReleased = true;
+    this._smoothZ = origin[2];
   }
 
   /**
-   * Eye position for rendering / PVS.
+   * Eye position for rendering / PVS (includes stair view smoothing).
    * @returns {Float32Array}
    */
   eye() {
     return new Float32Array([
       this.origin[0],
       this.origin[1],
-      this.origin[2] + this.viewOfsZ,
+      this._smoothZ + this.viewOfsZ,
     ]);
   }
 
@@ -124,6 +127,7 @@ export class PlayerMove {
 
     if (this.noclip) {
       this._noclipMove(dt, cmd);
+      this._smoothZ = this.origin[2];
       return;
     }
 
@@ -144,6 +148,25 @@ export class PlayerMove {
     this.velocity[2] -= SV_GRAVITY * dt;
 
     this._walkMove(dt);
+    this._updateStepSmooth(dt);
+  }
+
+  /**
+   * view.c stair smoothing — lag eye Z when origin steps up (never snap the camera up with physics).
+   * Physics origin still jumps (vanilla SV_WalkMove); only the view catches up at 80 units/sec.
+   * @param {number} dt
+   */
+  _updateStepSmooth(dt) {
+    const z = this.origin[2];
+    if (z > this._smoothZ) {
+      // Ascending: always ease the view up — do not require onground (it flickers during steps).
+      this._smoothZ += dt * 80;
+      if (this._smoothZ > z) this._smoothZ = z;
+      if (z - this._smoothZ > 12) this._smoothZ = z - 12;
+    } else {
+      // Flat or falling — stick to origin
+      this._smoothZ = z;
+    }
   }
 
   /**
@@ -325,7 +348,7 @@ export class PlayerMove {
     tr = this.world.playerMove(this.origin, downEnd, PLAYER_MINS, PLAYER_MAXS);
     this.origin.set(tr.endpos);
 
-    if (tr.fraction < 1 && tr.plane.normal[2] > 0.7) {
+    if (tr.plane.normal[2] > 0.7) {
       this.onground = true;
     } else {
       this.origin.set(nosteporg);

@@ -44,6 +44,8 @@ export class World {
    */
   constructor(bsp) {
     this.bsp = bsp;
+    /** @type {{ submodel: number, origin: Float32Array }[]} SOLID_BSP brush ents to clip */
+    this.brushes = [];
   }
 
   /**
@@ -80,7 +82,7 @@ export class World {
   }
 
   /**
-   * Player-sized box trace against world (hull 1). mins/maxs default to player hull.
+   * Player-sized box trace against world (hull 1) + SOLID_BSP brush submodels.
    * @param {Float32Array|number[]} start
    * @param {Float32Array|number[]} end
    * @param {Float32Array|number[]} [mins]
@@ -91,11 +93,53 @@ export class World {
     const hull = this.bsp.hulls[1];
     const mns = mins || hull.clipMins;
     const mxs = maxs || hull.clipMaxs;
-    // offset = clip_mins - mins + world.origin(0)
+    let trace = this._clipToHull(hull, 0, 0, 0, start, end, mns, mxs);
+
+    for (const be of this.brushes) {
+      const sm = this.bsp.submodels[be.submodel];
+      if (!sm) continue;
+      const brushHull = {
+        clipnodes: hull.clipnodes,
+        planes: hull.planes,
+        firstclipnode: sm.headnode[1],
+        lastclipnode: hull.lastclipnode,
+        clipMins: hull.clipMins,
+        clipMaxs: hull.clipMaxs,
+      };
+      const tr = this._clipToHull(
+        brushHull,
+        be.origin[0],
+        be.origin[1],
+        be.origin[2],
+        start,
+        end,
+        mns,
+        mxs,
+      );
+      if (tr.allsolid || tr.fraction < trace.fraction) {
+        trace = tr;
+      }
+    }
+    return trace;
+  }
+
+  /**
+   * @param {object} hull
+   * @param {number} ox entity origin x
+   * @param {number} oy
+   * @param {number} oz
+   * @param {Float32Array|number[]} start
+   * @param {Float32Array|number[]} end
+   * @param {Float32Array|number[]} mns
+   * @param {Float32Array|number[]} mxs
+   * @returns {Trace}
+   */
+  _clipToHull(hull, ox, oy, oz, start, end, mns, mxs) {
+    // offset = clip_mins - mins + ent.origin  (SV_HullForEntity / SV_ClipMoveToEntity)
     const offset = new Float32Array([
-      hull.clipMins[0] - mns[0],
-      hull.clipMins[1] - mns[1],
-      hull.clipMins[2] - mns[2],
+      hull.clipMins[0] - mns[0] + ox,
+      hull.clipMins[1] - mns[1] + oy,
+      hull.clipMins[2] - mns[2] + oz,
     ]);
     const startL = new Float32Array([
       start[0] - offset[0],

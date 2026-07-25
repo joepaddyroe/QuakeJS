@@ -53,7 +53,7 @@ If you are picking up this project with no chat history:
 5. Respect **§2–3** (SOLID + layers) before editing.
 6. After completing work, update **§12**, **§7**, and **§15 Changelog** in this file. Leave `README.md` alone unless the change is drastic for end users.
 
-**Current maturity (2026-07-25):** id1 PAK + BSP world (textures, lightmaps, PVS, sky, turb) + **hull1 player walk** (gravity, jump, steps, noclip). No QuakeC / entities / triggers yet.
+**Current maturity (2026-07-25):** id1 PAK + BSP world (textures, lightmaps, PVS, sky, turb) + hull1 walk + **stair view smooth** + QuakeC spawn/think/touch + **`*N` brush ents drawn** (doors/plats). No entity↔player clip yet; no loopback protocol.
 
 ### Remaining tasks (priority order)
 
@@ -66,8 +66,8 @@ Use **§13** for file-level detail. Summary:
 | **P1** | BSP / alias / sprite model load | Partial — BSP brush only |
 | **P1** | WebGPU world draw (brush + lightmaps) | Done (+ PVS/sky/turb) |
 | **P2** | Loopback client ↔ server + protocol | Not started |
-| **P2** | QuakeC VM (`pr_exec` / edicts / builtins) | Not started |
-| **P2** | Physics / movement (`sv_phys`, `world`) | Partial — world hull walk only |
+| **P2** | QuakeC VM (`pr_exec` / edicts / builtins) | Partial — spawn/think/touch |
+| **P2** | Physics / movement (`sv_phys`, `world`) | Partial — walk + PUSH/TOSS scaffold |
 | **P3** | View weapon, particles, status bar, menu | Not started |
 | **P3** | Sound (DMA-style mix → Web Audio) | Not started |
 | **P4** | Saves, demos, console polish | Not started |
@@ -296,13 +296,17 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started
 - [ ] Frustum cull on BSP nodes (`R_CullBox`)
 
 ### Phase 4 — Server + QuakeC
-- [ ] Edict pool + field layout (`progs.dat` CRC / defs)
-- [ ] QuakeC interpreter (`PrExec`)
-- [ ] Builtins subset (`PrBuiltins`) — enough for `worldspawn` / player
+- [x] Edict pool + field layout (`progs.dat` CRC / defs)
+- [x] QuakeC interpreter (`PrExec`) — LOAD/ADDRESS use field globals like WinQuake
+- [x] Builtins subset — doors/items/triggers spawn path
 - [x] World hull collision (`World.js` — PointContents + RecursiveHullCheck)
 - [x] Player walk scaffold (`PlayerMove.js` — accelerate / FlyMove / step-up / jump)
-- [ ] `SV_SpawnServer` full + entity physics
+- [x] Map entity spawn + think / PUSH / trigger touch (`Server.js` in Host frame)
+- [x] Draw `*N` brush entities (doors/plats) at edict origin
+- [x] Stair view smoothing (`view.c` oldz → eye Z)
+- [ ] Clip player against brush entities
 - [ ] Client connect via **loopback** (`net_loop`)
+- [ ] Fuller builtins (sound, aim, walkmove, …) + `PutClientInServer`
 
 ### Phase 5 — Client playable slice
 - [ ] `CL_SendCmd` / `SV_ClientThink` movement
@@ -339,12 +343,12 @@ Last audited: **2026-07-25** against `Quake-master/WinQuake`. Re-audit after maj
 ### 12.1 Subsystem maturity
 
 ```
-Host / frame         ███░░░░░░░  ~30%   rAF Host.frame; map load at boot
+Host / frame         ████░░░░░░  ~40%   rAF Host.frame; server physics + trigger touch
 Filesystem (PAK)     ████████░░  ~80%   pak0+pak1; no loose files / -path
 Models (BSP/MDL/SPR) █████░░░░░  ~55%   BSP+nodes/leafs/vis; no MDL/SPR
 WebGPU render        ███████░░░  ~70%   solid+lm+PVS+sky+turb; no frustum/alias
-Server / world       ████░░░░░░  ~35%   hull trace + player walk; no edicts/QC
-QuakeC VM            ░░░░░░░░░░   0%
+Server / world       ██████░░░░  ~55%   hull walk + spawn/PUSH/touch; no entity clip vs player
+QuakeC VM            ██████░░░░  ~55%   exec+edicts+builtins; doors/triggers on start
 Client / protocol    ░░░░░░░░░░   0%
 UI / console/menu    ░░░░░░░░░░   0%   HUD text overlay only
 Audio                ░░░░░░░░░░   0%
@@ -363,6 +367,7 @@ Net (non-loopback)   ░░░░░░░░░░   0%
 | World draw | `WorldRenderer.js` | Texture × lightmap; sky dual-layer; turb warp |
 | Collision | `server/World.js` | Hull0 contents + hull1 player trace |
 | Player move | `server/PlayerMove.js` | Walk/jump/step/noclip scaffold |
+| QuakeC | `progs/*`, `server/Server.js` | Load progs, spawn entities, think/PUSH/touch |
 
 ### 12.3 Partial — known gaps
 
@@ -401,8 +406,9 @@ Use this when choosing what to port next. Goal: **playable Quake 1 single-player
 | P1 | **Clear + draw world** | Done | `WebGpuRenderer.js` · `gl_rmain.c` |
 | P1 | **PVS + sky/turb** | Done | `BspModel.js`, `WorldRenderer.js` · `gl_warp.c`, `Mod_LeafPVS` |
 | P2 | **Physics / hulls** | Partial — world walk | `server/World.js`, `PlayerMove.js` · `world.c`, `sv_phys.c` |
-| P2 | **Loopback net + SV/CL connect** | Real Quake architecture | `net/NetLoop.js`, `Server.js`, `Client.js` · `net_loop.c`, `sv_main.c`, `cl_main.c` |
-| P2 | **QuakeC VM + builtins** | Game rules live in progs | `progs/*` · `pr_exec.c`, `pr_edict.c`, `pr_cmds.c` |
+| P2 | **QuakeC VM + builtins** | Partial — spawn/think/touch | `progs/*`, `Server.js` · `pr_exec.c`, `pr_edict.c`, `pr_cmds.c` |
+| P2 | **Draw brush ents + entity clip** | Partial — draw only | `WorldRenderer` submodels · `sv_phys` / `SV_ClipToLinks` |
+| P2 | **Loopback net + SV/CL connect** | Real Quake architecture | `net/NetLoop.js`, `Client.js` · `net_loop.c`, `sv_main.c`, `cl_main.c` |
 | P3 | **Alias + view weapon** | Player presence | `AliasRenderer.js` · `gl_mesh.c`, `view.c` |
 | P3 | **Status bar + menu + console** | Operable game | `ui/*` · `sbar.c`, `menu.c`, `console.c` |
 | P3 | **Sound** | Feedback | `audio/*` · `snd_dma.c`, `snd_mix.c` |
@@ -503,6 +509,9 @@ User supplies a legally obtained Quake `id1` directory (at least `pak0.pak`). Fi
 | 2026-07-25 | **Phase 1 data + world draw:** `PakFile`/`FileSystem`, BSP29 `BspModel`, `WorldRenderer` (texture×lightmap), `QuakeCamera` spawn on `maps/start.bsp` |
 | 2026-07-25 | **PVS + sky/turb:** nodes/leafs/vis, marksurfaces culling; dual-layer sky + water warp shaders |
 | 2026-07-25 | **Player collision walk:** clipnodes/hulls, `World` trace, `PlayerMove` (gravity/jump/steps); `N` noclip |
+| 2026-07-25 | **QuakeC VM:** `Progs`/`Edicts`/`PrExec`/`Builtins`, map spawn + think/PUSH/touch in `Host`; fixed LOAD/ADDRESS field-ofs (WinQuake `pr_exec.c`) |
+| 2026-07-25 | **Brush ents + stair smooth:** draw `*N` submodels at origin; `view.c` step-up eye lag (`_smoothZ`) |
+| 2026-07-25 | **Brush collision:** clip player vs SOLID_BSP `*N` hulls (fixes fall-through under `func_bossgate` after start teleporters) |
 
 ---
 
