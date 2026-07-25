@@ -118,3 +118,19 @@ export function mat4Translate(x, y, z) {
   out[14] = z;
   return out;
 }
+
+/**
+ * Rotation about Z (Quake yaw), radians.
+ * @param {number} yawRad
+ * @returns {Float32Array}
+ */
+export function mat4RotateZ(yawRad) {
+  const c = Math.cos(yawRad);
+  const s = Math.sin(yawRad);
+  const out = mat4Identity();
+  out[0] = c;
+  out[1] = s;
+  out[4] = -s;
+  out[5] = c;
+  return out;
+}

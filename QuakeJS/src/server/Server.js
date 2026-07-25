@@ -716,6 +716,37 @@ export class Server {
   }
 
   /**
+   * Non-brush models to draw (items, monsters, …).
+   * @returns {{ model: string, origin: Float32Array, yaw: number, frame: number }[]}
+   */
+  getAliasDrawList() {
+    const edicts = this.edicts;
+    const f = this.progs.f;
+    const progs = this.progs;
+    /** @type {{ model: string, origin: Float32Array, yaw: number, frame: number }[]} */
+    const out = [];
+    for (let e = 1; e < edicts.numEdicts; e++) {
+      if (edicts.free[e]) continue;
+      const model = progs.stringAt(edicts.getInt(e, f.model));
+      if (!model || model[0] === '*') continue;
+      if (!model.endsWith('.mdl')) continue;
+      const solid = edicts.getFloat(e, f.solid) | 0;
+      // Skip pure triggers / removed visuals
+      if (solid === SOLID_NOT && !(edicts.getFloat(e, f.modelindex) > 0)) continue;
+      const o = edicts.getVec(e, f.origin);
+      const ang = edicts.getVec(e, f.angles);
+      const frame = edicts.getFloat(e, f.frame) | 0;
+      out.push({
+        model,
+        origin: new Float32Array([o[0], o[1], o[2]]),
+        yaw: ang[1] || 0,
+        frame,
+      });
+    }
+    return out;
+  }
+
+  /**
    * Brush models to draw / clip (doors/plats/buttons) — *N submodels with SOLID_BSP.
    * @returns {{ submodel: number, origin: Float32Array, edict: number }[]}
    */

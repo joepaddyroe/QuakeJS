@@ -5,6 +5,7 @@
 import { DemoRoomRenderer } from './DemoRoomRenderer.js';
 import { FlyCamera } from './FlyCamera.js';
 import { WorldRenderer } from './WorldRenderer.js';
+import { AliasRenderer } from './AliasRenderer.js';
 import { BspModel } from './models/BspModel.js';
 import { PlayerMove } from '../server/PlayerMove.js';
 import { Server } from '../server/Server.js';
@@ -17,6 +18,7 @@ export class WebGpuRenderer {
     this._gpu = gpu;
     this._demo = new DemoRoomRenderer(gpu.device, gpu.presentationFormat);
     this._worldRend = new WorldRenderer(gpu.device, gpu.presentationFormat);
+    this._aliasRend = new AliasRenderer(gpu.device, gpu.presentationFormat);
     this._demoCamera = new FlyCamera();
     /** @type {PlayerMove|null} */
     this.player = null;
@@ -31,6 +33,7 @@ export class WebGpuRenderer {
     this.triCount = 0;
     this.visibleFaces = 0;
     this.viewLeaf = 0;
+    this.aliasCount = 0;
     this._time = 0;
   }
 
@@ -42,6 +45,7 @@ export class WebGpuRenderer {
   init() {
     this._demo.init();
     this._worldRend.initPipeline();
+    this._aliasRend.initPipeline();
   }
 
   /**
@@ -53,6 +57,7 @@ export class WebGpuRenderer {
     const palette = fs.loadPalette();
     const bsp = new BspModel(data, mapPath);
     this._worldRend.buildFromBsp(bsp, palette);
+    this._aliasRend.setFilesystem(fs, palette);
     this.server = new Server(bsp, fs, mapPath);
     this.collision = this.server.world;
     this.player = new PlayerMove(this.collision);
@@ -88,6 +93,7 @@ export class WebGpuRenderer {
     const encoder = device.createCommandEncoder();
     if (this.mode === 'world' && this.player) {
       const brushes = this.server ? this.server.getBrushDrawList() : [];
+      const aliases = this.server ? this.server.getAliasDrawList() : [];
       this._worldRend.draw(
         encoder,
         colorView,
@@ -97,8 +103,20 @@ export class WebGpuRenderer {
         this._time,
         brushes,
       );
+      if (this._worldRend._depthView) {
+        this._aliasRend.draw(
+          encoder,
+          colorView,
+          this._worldRend._depthView,
+          this.player.lookAtArgs(),
+          width,
+          height,
+          aliases,
+        );
+      }
       this.visibleFaces = this._worldRend.visibleFaces;
       this.viewLeaf = this._worldRend.viewLeaf;
+      this.aliasCount = aliases.length;
     } else {
       this._demo.draw(encoder, colorView, this._demoCamera.lookAtArgs(), width, height);
     }
@@ -108,5 +126,6 @@ export class WebGpuRenderer {
   destroy() {
     this._demo.destroy();
     this._worldRend.destroy();
+    this._aliasRend.destroy();
   }
 }

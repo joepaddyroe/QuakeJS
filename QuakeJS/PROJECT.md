@@ -281,7 +281,7 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started
 
 ### Phase 2 — Models
 - [x] Brush BSP load (verts, edges, surfaces, textures, lighting, texinfo, faces, entities, submodels)
-- [ ] Alias MDL load
+- [x] Alias MDL load
 - [ ] Sprite SPR load
 - [x] Texture upload path (8-bit → RGBA GPU; lightmap atlas 128×128 pages)
 
@@ -289,7 +289,7 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started
 - [x] World brush draw with lightmaps (static, style 0)
 - [x] PVS culling (`Mod_PointInLeaf` / `Mod_LeafPVS` / marksurfaces)
 - [x] Turbulent water / sky (`EmitWaterPolys` / `EmitSkyPolys` subset)
-- [ ] Alias models + viewentity weapon
+- [x] Alias models (items/monsters) — no view weapon yet
 - [ ] Sprites + particles
 - [ ] Dynamic lights / lightstyles
 - [ ] 2D draw (`Draw_Pic`, console background)
@@ -346,9 +346,9 @@ Last audited: **2026-07-25** against `Quake-master/WinQuake`. Re-audit after maj
 ```
 Host / frame         ████░░░░░░  ~40%   rAF Host.frame; server physics + trigger touch
 Filesystem (PAK)     ████████░░  ~80%   pak0+pak1; no loose files / -path
-Models (BSP/MDL/SPR) █████░░░░░  ~55%   BSP+nodes/leafs/vis; no MDL/SPR
-WebGPU render        ███████░░░  ~70%   solid+lm+PVS+sky+turb; no frustum/alias
-Server / world       ██████░░░░  ~55%   hull walk + spawn/PUSH/touch; no entity clip vs player
+Models (BSP/MDL/SPR) ██████░░░░  ~65%   BSP+alias MDL; no SPR
+WebGPU render        ███████░░░  ~75%   world+brush+alias; no frustum/weapon
+Server / world       ███████░░░  ~65%   hull walk + pushers + brush clip
 QuakeC VM            ██████░░░░  ~55%   exec+edicts+builtins; doors/triggers on start
 Client / protocol    ░░░░░░░░░░   0%
 UI / console/menu    ░░░░░░░░░░   0%   HUD text overlay only
@@ -517,6 +517,7 @@ User supplies a legally obtained Quake `id1` directory (at least `pak0.pak`). Fi
 | 2026-07-25 | **Changelevel:** builtin #70 + `Host.changeMap`; PlayerPreThink/buttons; touch episode exits to load `e1m1` etc. |
 | 2026-07-25 | **Doors/buttons:** SV_Impact on brush bumps (func_button); hitscan for shootable secret doors; walk-up door fields already via SOLID_TRIGGER |
 | 2026-07-25 | **Pushers:** SV_PushMove subset carries local player on plats/doors; `groundEntity`; brush `startsolid` merge; refresh brushes while pushers move |
+| 2026-07-25 | **Alias MDL:** `AliasModel` + `AliasRenderer`; draw items/monsters from `getAliasDrawList` |
 
 ---
 
