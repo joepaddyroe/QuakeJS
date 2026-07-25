@@ -53,7 +53,7 @@ If you are picking up this project with no chat history:
 5. Respect **§2–3** (SOLID + layers) before editing.
 6. After completing work, update **§12**, **§7**, and **§15 Changelog** in this file. Leave `README.md` alone unless the change is drastic for end users.
 
-**Current maturity (2026-07-25):** id1 PAK + BSP world + hull walk + QuakeC + brush ents + alias/sprites + lightstyles/dlights + particles + FP shotgun + UI + loopback + **PutClientInServer** + **clc_move** (local PlayerMove still) + frustum cull + file picker + centerprint + CD stub.
+**Current maturity (2026-07-26):** id1 SP slice through Phase 5 — loopback protocol (clc_move, clientdata, baselines, entity updates), QC PutClientInServer, walkmove/movetogoal, view bob/punch/roll. Phase 8 saves/demos and Phase 9 MP still open.
 
 ### Remaining tasks (priority order)
 
@@ -313,10 +313,10 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started
 - [x] `clc_move` usercmds over loopback (angles/buttons; walk still local PlayerMove)
 
 ### Phase 5 — Client playable slice
-- [ ] `CL_SendCmd` / `SV_ClientThink` movement via protocol
-- [ ] `CL_ParseServerMessage` entity baseline / updates
-- [~] View punch, bob, roll (`view.c`) subset — bob done; punch/roll later
-- [ ] Point entities: items, monsters, doors/plats/triggers via QuakeC (no hand-rolled Doom-style AI)
+- [x] `CL_SendCmd` / `SV_ClientThink` movement via protocol (`lastCmd` → PlayerMove + PlayerPostThink)
+- [x] `CL_ParseServerMessage` entity baseline / updates (`svc_spawnbaseline`, fast updates, `svc_clientdata`)
+- [x] View punch, bob, roll (`view.c`) subset
+- [x] Point entities: items, monsters, doors/plats/triggers via QuakeC (`walkmove` / `movetogoal` / `checkclient` + existing draw)
 
 ### Phase 6 — UI / meta
 - [x] Console + cvars + commands (`cmd`, `cvar`, `console`, `keys`) — conback + conchars canvas
@@ -348,17 +348,17 @@ Last audited: **2026-07-25** against `Quake-master/WinQuake`. Re-audit after maj
 ### 12.1 Subsystem maturity
 
 ```
-Host / frame         ██████░░░░  ~60%   Host_Init/Shutdown stub; loopback + clc_move + PutClientInServer
+Host / frame         ███████░░░  ~70%   Host_Init/Shutdown; protocol move + clientdata flush
 Filesystem (PAK)     █████████░  ~90%   pak0+pak1; file-picker fallback when fetch fails
 Models (BSP/MDL/SPR) ████████░░  ~80%   BSP + alias MDL + SPR
 WebGPU render        ██████████  ~95%   world+brush+alias+sprites+lightstyles+dlights+view weapon+particles+frustum
-Server / world       ███████░░░  ~65%   hull walk + pushers + brush clip
-QuakeC VM            ██████░░░░  ~55%   exec+edicts+builtins; doors/triggers on start
-Client / protocol    ███░░░░░░░  ~30%   loopback + parse print/TE/lightstyle; no entity updates
-UI / console/menu    █████████░  ~90%   sbar + conback console + menu + loading/intermission
-Audio                ████░░░░░░  ~40%   Web Audio SFX + Quake spatialize; no DMA mix / CD
+Server / world       ███████░░░  ~70%   hull walk + pushers + brush clip + walkmove
+QuakeC VM            ███████░░░  ~65%   exec+edicts+builtins; PutClientInServer; walkmove/checkclient
+Client / protocol    ███████░░░  ~70%   loopback + clientdata + baselines + entity updates + clc_move
+UI / console/menu    █████████░  ~90%   sbar + conback console + menu + loading/intermission + centerprint
+Audio                █████░░░░░  ~50%   Web Audio SFX + spatialize + CD stub
 Saves / demos        ░░░░░░░░░░   0%
-Net (loopback)       ████░░░░░░  ~40%   NetLoop + SizeBuf; no remote drivers
+Net (loopback)       ███████░░░  ~70%   NetLoop + SizeBuf + per-frame datagram
 Net (non-loopback)   ░░░░░░░░░░   0%
 ```
 
@@ -378,10 +378,9 @@ Net (non-loopback)   ░░░░░░░░░░   0%
 ### 12.3 Partial — known gaps
 
 #### Rendering
-- No frustum box cull on nodes (`R_CullBox`)
-- Lightstyles not animated (style 0 @ 'm' scale only)
 - Sky/turb are WebGPU approximations of `gl_warp.c` (no subdivided polys)
 - `DemoRoomRenderer` retained as load-failure fallback
+- Entity draw still primarily from server `getAliasDrawList` (client entity state parsed but not yet the sole draw source)
 
 ### 12.4 Missing entirely (initial backlog)
 
@@ -546,6 +545,7 @@ User supplies a legally obtained Quake `id1` directory (at least `pak0.pak`). Fi
 | 2026-07-25 | **Console 2D:** canvas `Con_DrawConsole` with `gfx/conback.lmp` + wad `conchars`; `DrawPics` char/string helpers |
 | 2026-07-25 | **Phase 4 loopback:** `NetLoop` + `SizeBuf`; `Client`/`ClientParse` (print, TE, lightstyle); Write* → datagram flush |
 | 2026-07-25 | **Phase backlog sweep:** Host init/shutdown; id1 file picker; frustum `R_CullBox`; QC `PutClientInServer`; `clc_move` loopback; centerprint overlay; `CdAudio` stub; view bob |
+| 2026-07-26 | **Phase 5 client slice:** usercmd→PlayerMove; `svc_clientdata`/`spawnbaseline`/fast entity updates; punch+roll; `walkmove`/`movetogoal`/`checkclient`; PlayerPostThink |
 
 ---
 

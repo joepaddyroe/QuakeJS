@@ -31,25 +31,59 @@ function normalize(v) {
 }
 
 /**
- * R_SetFrustum for 90° FOV (vpn ± vright / vpn ± vup).
+ * Build side plane: normalize(forward * sin(half) ± axis * cos(half)).
+ * At half=45° this matches Quake's vpn ± vright / vpn ± vup.
+ * @param {Float32Array|number[]} forward
+ * @param {Float32Array|number[]} axis
+ * @param {number} sinHalf
+ * @param {number} cosHalf
+ * @param {number} sign +1 or -1
+ * @returns {Float32Array}
+ */
+function sideNormal(forward, axis, sinHalf, cosHalf, sign) {
+  const n = new Float32Array([
+    forward[0] * sinHalf + sign * axis[0] * cosHalf,
+    forward[1] * sinHalf + sign * axis[1] * cosHalf,
+    forward[2] * sinHalf + sign * axis[2] * cosHalf,
+  ]);
+  normalize(n);
+  return n;
+}
+
+/**
+ * R_SetFrustum matching mat4Perspective(fovY, aspect, …).
+ * Vertical FOV is `fovYDeg`; horizontal FOV widens with aspect
+ * (so widescreen does not over-cull the sides).
+ *
  * @param {Float32Array|number[]} origin
  * @param {Float32Array|number[]} forward vpn
  * @param {Float32Array|number[]} right
  * @param {Float32Array|number[]} up
+ * @param {number} [fovYDeg=90]
+ * @param {number} [aspect=1]
  * @returns {FrustumPlane[]}
  */
-export function setFrustum90(origin, forward, right, up) {
+export function setFrustum(origin, forward, right, up, fovYDeg = 90, aspect = 1) {
+  const fovY = Math.max(1, Math.min(179, fovYDeg)) * (Math.PI / 180);
+  const halfY = fovY * 0.5;
+  // Horizontal half-angle from vertical FOV + aspect (matches perspective matrix)
+  const halfX = Math.atan(Math.tan(halfY) * Math.max(aspect, 0.01));
+  const sx = Math.sin(halfX);
+  const cx = Math.cos(halfX);
+  const sy = Math.sin(halfY);
+  const cy = Math.cos(halfY);
+
+  const normals = [
+    sideNormal(forward, right, sx, cx, 1),
+    sideNormal(forward, right, sx, cx, -1),
+    sideNormal(forward, up, sy, cy, 1),
+    sideNormal(forward, up, sy, cy, -1),
+  ];
+
   /** @type {FrustumPlane[]} */
   const frustum = [];
-  const sides = [
-    [forward[0] + right[0], forward[1] + right[1], forward[2] + right[2]],
-    [forward[0] - right[0], forward[1] - right[1], forward[2] - right[2]],
-    [forward[0] + up[0], forward[1] + up[1], forward[2] + up[2]],
-    [forward[0] - up[0], forward[1] - up[1], forward[2] - up[2]],
-  ];
   for (let i = 0; i < 4; i++) {
-    const n = new Float32Array(sides[i]);
-    normalize(n);
+    const n = normals[i];
     const dist = n[0] * origin[0] + n[1] * origin[1] + n[2] * origin[2];
     frustum.push({
       normal: n,
@@ -58,6 +92,13 @@ export function setFrustum90(origin, forward, right, up) {
     });
   }
   return frustum;
+}
+
+/**
+ * @deprecated use setFrustum — kept for 90° square aspect callers
+ */
+export function setFrustum90(origin, forward, right, up) {
+  return setFrustum(origin, forward, right, up, 90, 1);
 }
 
 /**
@@ -101,7 +142,7 @@ export function boxOnPlaneSide(emins, emaxs, p) {
       break;
     case 7:
       dist1 = n[0] * emins[0] + n[1] * emins[1] + n[2] * emins[2];
-      dist2 = n[0] * emaxs[0] + n[1] * emaxs[1] + n[2] * emaxs[2];
+      dist2 = n[0] * emaxs[0] + n[1] * emaxs[1] + n[2] * emins[2];
       break;
     default:
       dist1 = dist2 = 0;

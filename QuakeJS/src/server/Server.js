@@ -15,6 +15,7 @@ import {
   MOVETYPE_FLYMISSILE,
   MOVETYPE_BOUNCE,
   MOVETYPE_NOCLIP,
+  MOVETYPE_STEP,
   SOLID_NOT,
   SOLID_TRIGGER,
   SOLID_BSP,
@@ -30,8 +31,9 @@ import { World } from './World.js';
 import { PLAYER_MINS, PLAYER_MAXS } from './PlayerMove.js';
 import { LightStyles } from '../render/LightStyles.js';
 import { SizeBuf } from '../net/SizeBuf.js';
-import { MSG, clc, svc } from '../protocol/Protocol.js';
+import { MSG, clc, svc, U, SU, DEFAULT_VIEWHEIGHT } from '../protocol/Protocol.js';
 import { MAX_LIGHTSTYLES } from '../render/LightStyles.js';
+import { emptyEntityState } from '../client/ClientWorld.js';
 
 /**
  * @param {string} data
@@ -149,6 +151,10 @@ export class Server {
       angles: new Float32Array(3),
     };
     this._clientMsg = new SizeBuf(256);
+    /** @type {Map<number, ReturnType<typeof emptyEntityState>>} */
+    this.baselines = new Map();
+    /** Per-frame unreliable frame builder */
+    this._frameMsg = new SizeBuf(8192);
     this.edicts.time = this.time;
     /** @type {string|null} */
     this.pendingMap = null;
@@ -229,17 +235,20 @@ export class Server {
   }
 
   /**
-   * SV_Physics_Client subset — PlayerPreThink (intermission / rules).
+   * SV_Physics_Client / DropPunchAngle + PlayerPreThink.
    * @param {number} ent
    * @param {{ attack?: boolean, jump?: boolean }} buttons
+   * @param {number} [frametime=0.05]
    */
-  runClientThink(ent, buttons = {}) {
+  runClientThink(ent, buttons = {}, frametime = 0.05) {
     const progs = this.progs;
     const edicts = this.edicts;
     const f = progs.f;
     const ofs = progs.ofs;
     const gi = progs.globalsI;
     const gf = progs.globalsF;
+
+    this.dropPunchAngle(ent, frametime);
 
     edicts.setFloat(ent, f.button0, buttons.attack ? 1 : 0);
     edicts.setFloat(ent, f.button1, 0);
@@ -256,6 +265,61 @@ export class Server {
       this.exec.reset();
       console.error('PlayerPreThink', err);
     }
+  }
+
+  /**
+   * PlayerPostThink after movement.
+   * @param {number} ent
+   */
+  runClientPostThink(ent) {
+    const progs = this.progs;
+    const gi = progs.globalsI;
+    const gf = progs.globalsF;
+    const ofs = progs.ofs;
+    const post = gi[ofs.PlayerPostThink];
+    if (!post) return;
+    gi[ofs.self] = ent;
+    gi[ofs.other] = 0;
+    gf[ofs.time] = this.time;
+    try {
+      this.exec.execute(post);
+    } catch (err) {
+      this.exec.reset();
+      console.error('PlayerPostThink', err);
+    }
+  }
+
+  /**
+   * DropPunchAngle (sv_user.c)
+   * @param {number} ent
+   * @param {number} frametime
+   */
+  dropPunchAngle(ent, frametime) {
+    const punchOfs = this.progs.fieldByName.get('punchangle')?.ofs;
+    if (punchOfs == null) return;
+    const p = this.edicts.getVec(ent, punchOfs);
+    let len = Math.hypot(p[0], p[1], p[2]);
+    if (len < 0.001) {
+      this.edicts.setVec(ent, punchOfs, [0, 0, 0]);
+      return;
+    }
+    const nx = p[0] / len;
+    const ny = p[1] / len;
+    const nz = p[2] / len;
+    len -= 10 * frametime;
+    if (len < 0) len = 0;
+    this.edicts.setVec(ent, punchOfs, [nx * len, ny * len, nz * len]);
+  }
+
+  /**
+   * @param {number} ent
+   * @returns {Float32Array}
+   */
+  getPunchangle(ent) {
+    const punchOfs = this.progs.fieldByName.get('punchangle')?.ofs;
+    if (punchOfs == null) return new Float32Array(3);
+    const p = this.edicts.getVec(ent, punchOfs);
+    return new Float32Array([p[0], p[1], p[2]]);
   }
 
   /**
@@ -354,6 +418,7 @@ export class Server {
       this.reliable.writeString(ls.map);
     }
     this.putClientInServer(1);
+    this.createBaselines();
     this.sendClientMessages();
     return this._clientSpawnPose(1);
   }
@@ -557,17 +622,233 @@ export class Server {
   }
 
   /**
-   * SV_SendClientMessages — flush datagrams over loopback.
+   * SV_SendClientMessages / SV_SendClientDatagram subset.
    */
   sendClientMessages() {
     if (!this.net || !this.netSocket) return;
-    if (this.datagram.cursize > 0) {
-      this.net.sendUnreliable(this.netSocket, this.datagram);
-      this.datagram.clear();
+
+    const msg = this._frameMsg;
+    msg.clear();
+    msg.writeByte(svc.time);
+    msg.writeFloat(this.time);
+    this.writeClientdataToMessage(1, msg);
+    this.writeEntitiesToClient(1, msg);
+
+    // Append pending unreliable (TE, particles, …)
+    const pending = this.datagram.bytes();
+    for (let i = 0; i < pending.length; i++) msg.writeByte(pending[i]);
+    this.datagram.clear();
+
+    if (msg.cursize > 0) {
+      this.net.sendUnreliable(this.netSocket, msg);
     }
     if (this.reliable.cursize > 0) {
       this.net.sendReliable(this.netSocket, this.reliable);
       this.reliable.clear();
+    }
+  }
+
+  /**
+   * SV_CreateBaseline — write svc_spawnbaseline for visible edicts.
+   */
+  createBaselines() {
+    const edicts = this.edicts;
+    const f = this.progs.f;
+    const progs = this.progs;
+    this.baselines.clear();
+    for (let e = 0; e < edicts.numEdicts; e++) {
+      if (edicts.free[e]) continue;
+      const modelindex = edicts.getFloat(e, f.modelindex) | 0;
+      if (e > MAX_CLIENTS && !modelindex) continue;
+
+      const base = emptyEntityState();
+      const o = edicts.getVec(e, f.origin);
+      const a = edicts.getVec(e, f.angles);
+      base.origin[0] = o[0];
+      base.origin[1] = o[1];
+      base.origin[2] = o[2];
+      base.angles[0] = a[0];
+      base.angles[1] = a[1];
+      base.angles[2] = a[2];
+      base.frame = edicts.getFloat(e, f.frame) | 0;
+      const skinOfs = progs.fieldByName.get('skin')?.ofs;
+      base.skin = skinOfs != null ? edicts.getFloat(e, skinOfs) | 0 : 0;
+      if (e >= 1 && e <= MAX_CLIENTS) {
+        base.colormap = e;
+        base.modelindex = this.precacheModel('progs/player.mdl');
+      } else {
+        base.colormap = 0;
+        base.modelindex = modelindex;
+      }
+      const effectsOfs = progs.fieldByName.get('effects')?.ofs;
+      base.effects = effectsOfs != null ? edicts.getFloat(e, effectsOfs) | 0 : 0;
+      this.baselines.set(e, base);
+
+      this.reliable.writeByte(svc.spawnbaseline);
+      this.reliable.writeShort(e);
+      this.reliable.writeByte(base.modelindex);
+      this.reliable.writeByte(base.frame);
+      this.reliable.writeByte(base.colormap);
+      this.reliable.writeByte(base.skin);
+      for (let i = 0; i < 3; i++) {
+        this.reliable.writeCoord(base.origin[i]);
+        this.reliable.writeAngle(base.angles[i]);
+      }
+    }
+  }
+
+  /**
+   * SV_WriteClientdataToMessage
+   * @param {number} ent
+   * @param {SizeBuf} msg
+   */
+  writeClientdataToMessage(ent, msg) {
+    const edicts = this.edicts;
+    const f = this.progs.f;
+    const progs = this.progs;
+    if (edicts.free[ent]) return;
+
+    if (edicts.getFloat(ent, f.fixangle) | 0) {
+      const ang = edicts.getVec(ent, f.angles);
+      msg.writeByte(svc.setangle);
+      msg.writeAngle(ang[0]);
+      msg.writeAngle(ang[1]);
+      msg.writeAngle(ang[2]);
+      edicts.setFloat(ent, f.fixangle, 0);
+    }
+
+    let bits = 0;
+    const viewOfs = edicts.getVec(ent, f.view_ofs);
+    if (viewOfs[2] !== DEFAULT_VIEWHEIGHT) bits |= SU.VIEWHEIGHT;
+    const idealOfs = progs.fieldByName.get('idealpitch')?.ofs;
+    const idealpitch = idealOfs != null ? edicts.getFloat(ent, idealOfs) : 0;
+    if (idealpitch) bits |= SU.IDEALPITCH;
+
+    bits |= SU.ITEMS;
+    if ((edicts.getFloat(ent, f.flags) | 0) & FL_ONGROUND) bits |= SU.ONGROUND;
+    const waterlevelOfs = f.waterlevel;
+    if (waterlevelOfs != null && edicts.getFloat(ent, waterlevelOfs) >= 2) {
+      bits |= SU.INWATER;
+    }
+
+    const punchOfs = progs.fieldByName.get('punchangle')?.ofs;
+    const punch =
+      punchOfs != null
+        ? edicts.getVec(ent, punchOfs)
+        : [0, 0, 0];
+    const vel = edicts.getVec(ent, f.velocity);
+    for (let i = 0; i < 3; i++) {
+      if (punch[i]) bits |= SU.PUNCH1 << i;
+      if (vel[i]) bits |= SU.VELOCITY1 << i;
+    }
+
+    if (edicts.getFloat(ent, f.weaponframe)) bits |= SU.WEAPONFRAME;
+    if (edicts.getFloat(ent, f.armorvalue)) bits |= SU.ARMOR;
+    bits |= SU.WEAPON;
+
+    const items = edicts.getFloat(ent, f.items) | 0;
+
+    msg.writeByte(svc.clientdata);
+    msg.writeShort(bits);
+
+    if (bits & SU.VIEWHEIGHT) msg.writeChar(viewOfs[2] | 0);
+    if (bits & SU.IDEALPITCH) msg.writeChar(idealpitch | 0);
+
+    for (let i = 0; i < 3; i++) {
+      if (bits & (SU.PUNCH1 << i)) msg.writeChar(punch[i] | 0);
+      if (bits & (SU.VELOCITY1 << i)) msg.writeChar((vel[i] / 16) | 0);
+    }
+
+    msg.writeLong(items);
+
+    if (bits & SU.WEAPONFRAME) {
+      msg.writeByte(edicts.getFloat(ent, f.weaponframe) | 0);
+    }
+    if (bits & SU.ARMOR) {
+      msg.writeByte(edicts.getFloat(ent, f.armorvalue) | 0);
+    }
+    if (bits & SU.WEAPON) {
+      const wmodel = progs.stringAt(edicts.getInt(ent, f.weaponmodel));
+      msg.writeByte(this.precacheModel(wmodel) & 0xff);
+    }
+
+    msg.writeShort(edicts.getFloat(ent, f.health) | 0);
+    msg.writeByte(edicts.getFloat(ent, f.currentammo) | 0);
+    msg.writeByte(edicts.getFloat(ent, f.ammo_shells) | 0);
+    msg.writeByte(edicts.getFloat(ent, f.ammo_nails) | 0);
+    msg.writeByte(edicts.getFloat(ent, f.ammo_rockets) | 0);
+    msg.writeByte(edicts.getFloat(ent, f.ammo_cells) | 0);
+    msg.writeByte(edicts.getFloat(ent, f.weapon) | 0);
+  }
+
+  /**
+   * SV_WriteEntitiesToClient — loopback: all ents with modelindex (no PVS).
+   * @param {number} clent
+   * @param {SizeBuf} msg
+   */
+  writeEntitiesToClient(clent, msg) {
+    const edicts = this.edicts;
+    const f = this.progs.f;
+    const progs = this.progs;
+    const skinOfs = progs.fieldByName.get('skin')?.ofs;
+    const effectsOfs = progs.fieldByName.get('effects')?.ofs;
+
+    for (let e = 1; e < edicts.numEdicts; e++) {
+      if (edicts.free[e]) continue;
+      const modelindex = edicts.getFloat(e, f.modelindex) | 0;
+      if (e !== clent && !modelindex) continue;
+      // Local FP: skip drawing player body (model cleared); still allow updates if index set
+      if (e === clent && !modelindex) continue;
+
+      let base = this.baselines.get(e);
+      if (!base) {
+        base = emptyEntityState();
+        this.baselines.set(e, base);
+      }
+
+      const o = edicts.getVec(e, f.origin);
+      const a = edicts.getVec(e, f.angles);
+      const frame = edicts.getFloat(e, f.frame) | 0;
+      const skin = skinOfs != null ? edicts.getFloat(e, skinOfs) | 0 : 0;
+      const effects = effectsOfs != null ? edicts.getFloat(e, effectsOfs) | 0 : 0;
+      const colormap = e <= MAX_CLIENTS ? e : 0;
+      const movetype = edicts.getFloat(e, f.movetype) | 0;
+
+      let bits = 0;
+      for (let i = 0; i < 3; i++) {
+        const miss = o[i] - base.origin[i];
+        if (miss < -0.1 || miss > 0.1) bits |= U.ORIGIN1 << i;
+      }
+      if (a[0] !== base.angles[0]) bits |= U.ANGLE1;
+      if (a[1] !== base.angles[1]) bits |= U.ANGLE2;
+      if (a[2] !== base.angles[2]) bits |= U.ANGLE3;
+      if (movetype === MOVETYPE_STEP) bits |= U.NOLERP;
+      if (colormap !== base.colormap) bits |= U.COLORMAP;
+      if (skin !== base.skin) bits |= U.SKIN;
+      if (frame !== base.frame) bits |= U.FRAME;
+      if (effects !== base.effects) bits |= U.EFFECTS;
+      if (modelindex !== base.modelindex) bits |= U.MODEL;
+      if (e >= 256) bits |= U.LONGENTITY;
+      if (bits >= 256) bits |= U.MOREBITS;
+
+      if (msg.maxSize - msg.cursize < 16) break;
+
+      msg.writeByte(bits | U.SIGNAL);
+      if (bits & U.MOREBITS) msg.writeByte(bits >> 8);
+      if (bits & U.LONGENTITY) msg.writeShort(e);
+      else msg.writeByte(e);
+
+      if (bits & U.MODEL) msg.writeByte(modelindex);
+      if (bits & U.FRAME) msg.writeByte(frame);
+      if (bits & U.COLORMAP) msg.writeByte(colormap);
+      if (bits & U.SKIN) msg.writeByte(skin);
+      if (bits & U.EFFECTS) msg.writeByte(effects);
+      if (bits & U.ORIGIN1) msg.writeCoord(o[0]);
+      if (bits & U.ANGLE1) msg.writeAngle(a[0]);
+      if (bits & U.ORIGIN2) msg.writeCoord(o[1]);
+      if (bits & U.ANGLE2) msg.writeAngle(a[1]);
+      if (bits & U.ORIGIN3) msg.writeCoord(o[2]);
+      if (bits & U.ANGLE3) msg.writeAngle(a[2]);
     }
   }
 
@@ -804,6 +1085,7 @@ export class Server {
         case MOVETYPE_FLY:
         case MOVETYPE_WALK:
         case MOVETYPE_NOCLIP:
+        case MOVETYPE_STEP:
           this._runThink(e, frametime);
           break;
         default:

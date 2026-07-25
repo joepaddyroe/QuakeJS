@@ -5,6 +5,7 @@
 import { SizeBuf } from '../net/SizeBuf.js';
 import { clc } from '../protocol/Protocol.js';
 import { parseServerMessage } from './ClientParse.js';
+import { ClientWorld } from './ClientWorld.js';
 
 export const ca = {
   dedicated: 0,
@@ -31,6 +32,7 @@ export class Client {
     this.movemessages = 0;
     /** Last viewangles sent (pitch, yaw, roll) */
     this.viewangles = new Float32Array(3);
+    this.world = new ClientWorld();
   }
 
   /**
@@ -40,6 +42,7 @@ export class Client {
     this.socket = this.net.connectLocal();
     this.state = ca.connected;
     this.movemessages = 0;
+    this.world.clear();
     this.hooks.print?.('Connected to loopback\n');
   }
 
@@ -57,6 +60,7 @@ export class Client {
     while (this.net.getMessage(this.socket, this._msg)) {
       parseServerMessage(this._msg, {
         ...this.hooks,
+        world: this.world,
         time: (t) => {
           this.mtime = t;
           this.hooks.time?.(t);

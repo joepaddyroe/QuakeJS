@@ -6,7 +6,7 @@
 import { mat4LookAt, mat4Multiply, mat4Perspective, mat4Translate } from '../math/Mat4.js';
 import { LightStyles } from './LightStyles.js';
 import { MAX_DLIGHTS } from './DynamicLights.js';
-import { setFrustum90 } from '../math/Frustum.js';
+import { setFrustum } from '../math/Frustum.js';
 
 const BLOCK_WIDTH = 128;
 const BLOCK_HEIGHT = 128;
@@ -1169,7 +1169,9 @@ export class WorldRenderer {
     right[0] /= rl;
     right[1] /= rl;
     right[2] /= rl;
-    const frustum = setFrustum90(camera.eye, forward, right, up);
+    const aspect = width / Math.max(height, 1);
+    const fovYDeg = 90;
+    const frustum = setFrustum(camera.eye, forward, right, up, fovYDeg, aspect);
 
     bsp.gatherVisibleFaces(
       camera.eye,
@@ -1181,8 +1183,7 @@ export class WorldRenderer {
     this.visibleFaces =
       this._solidOut.length + this._skyOut.length + this._turbOut.length;
 
-    const aspect = width / Math.max(height, 1);
-    const proj = mat4Perspective((90 * Math.PI) / 180, aspect, 1, 8192);
+    const proj = mat4Perspective((fovYDeg * Math.PI) / 180, aspect, 1, 8192);
     const view = mat4LookAt(camera.eye, camera.center, camera.up);
     const viewProj = mat4Multiply(proj, view);
 

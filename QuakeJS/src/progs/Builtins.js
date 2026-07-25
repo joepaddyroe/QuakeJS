@@ -202,6 +202,12 @@ export function createBuiltins(ctx) {
     void tr;
   };
   builtins[17] = () => {
+    // checkclient — prefer local player if alive
+    const f = progs.f;
+    if (!edicts.free[1] && edicts.getFloat(1, f.health) > 0) {
+      RETURN_INT(1);
+      return;
+    }
     RETURN_INT(0);
   }; // checkclient
   builtins[18] = () => {
@@ -265,7 +271,33 @@ export function createBuiltins(ctx) {
   builtins[30] = () => {}; // traceoff
   builtins[31] = () => {}; // eprint
   builtins[32] = () => {
-    RETURN_FLOAT(0);
+    // walkmove(yaw, dist) — PF_walkmove subset
+    const self = G_INT(ofs.self);
+    const yaw = (G_FLOAT(PARM(0)) * Math.PI) / 180;
+    const dist = G_FLOAT(PARM(1));
+    const o = edicts.getVec(self, f.origin);
+    const end = new Float32Array([
+      o[0] + Math.cos(yaw) * dist,
+      o[1] + Math.sin(yaw) * dist,
+      o[2],
+    ]);
+    const mins = new Float32Array(edicts.getVec(self, f.mins));
+    const maxs = new Float32Array(edicts.getVec(self, f.maxs));
+    const tr = ctx.server.world.playerMove(o, end, mins, maxs);
+    if (tr.allsolid || tr.startsolid || tr.fraction === 0) {
+      RETURN_FLOAT(0);
+      return;
+    }
+    edicts.setVec(self, f.origin, tr.endpos);
+    edicts.linkAbs(self);
+    if (tr.fraction === 1 || tr.plane.normal[2] > 0.7) {
+      edicts.setFloat(
+        self,
+        f.flags,
+        (edicts.getFloat(self, f.flags) | 0) | FL_ONGROUND,
+      );
+    }
+    RETURN_FLOAT(1);
   }; // walkmove
   builtins[33] = fixme;
   builtins[34] = () => {
@@ -401,7 +433,41 @@ export function createBuiltins(ctx) {
   };
   for (let i = 60; i <= 66; i++) builtins[i] = () => {};
   builtins[67] = () => {
-    RETURN_FLOAT(0);
+    // movetogoal(dist) — step toward enemy / goalentity
+    const self = G_INT(ofs.self);
+    const dist = G_FLOAT(PARM(0));
+    const enemyOfs = progs.fieldByName.get('enemy')?.ofs;
+    const goalOfs = progs.fieldByName.get('goalentity')?.ofs;
+    let target = 0;
+    if (enemyOfs != null) target = edicts.getInt(self, enemyOfs) | 0;
+    if (!target && goalOfs != null) target = edicts.getInt(self, goalOfs) | 0;
+    if (!target || edicts.free[target]) {
+      RETURN_FLOAT(0);
+      return;
+    }
+    const o = edicts.getVec(self, f.origin);
+    const t = edicts.getVec(target, f.origin);
+    const dx = t[0] - o[0];
+    const dy = t[1] - o[1];
+    const len = Math.hypot(dx, dy) || 1;
+    const yaw = (Math.atan2(dy, dx) * 180) / Math.PI;
+    edicts.setVec(self, f.angles, [0, yaw, 0]);
+    // Reuse walkmove path
+    const end = new Float32Array([
+      o[0] + (dx / len) * dist,
+      o[1] + (dy / len) * dist,
+      o[2],
+    ]);
+    const mins = new Float32Array(edicts.getVec(self, f.mins));
+    const maxs = new Float32Array(edicts.getVec(self, f.maxs));
+    const tr = ctx.server.world.playerMove(o, end, mins, maxs);
+    if (tr.allsolid || tr.fraction === 0) {
+      RETURN_FLOAT(0);
+      return;
+    }
+    edicts.setVec(self, f.origin, tr.endpos);
+    edicts.linkAbs(self);
+    RETURN_FLOAT(1);
   }; // movetogoal
   builtins[68] = () => {
     // makestatic — free edict

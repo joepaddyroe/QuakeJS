@@ -77,3 +77,42 @@ export const MSG = {
   ALL: 2,
   INIT: 3,
 };
+
+/** Fast entity update bits (protocol.h) — high bit of cmd is U_SIGNAL */
+export const U = {
+  MOREBITS: 1 << 0,
+  ORIGIN1: 1 << 1,
+  ORIGIN2: 1 << 2,
+  ORIGIN3: 1 << 3,
+  ANGLE2: 1 << 4,
+  NOLERP: 1 << 5,
+  FRAME: 1 << 6,
+  SIGNAL: 1 << 7,
+  ANGLE1: 1 << 8,
+  ANGLE3: 1 << 9,
+  MODEL: 1 << 10,
+  COLORMAP: 1 << 11,
+  SKIN: 1 << 12,
+  EFFECTS: 1 << 13,
+  LONGENTITY: 1 << 14,
+};
+
+/** svc_clientdata bits */
+export const SU = {
+  VIEWHEIGHT: 1 << 0,
+  IDEALPITCH: 1 << 1,
+  PUNCH1: 1 << 2,
+  PUNCH2: 1 << 3,
+  PUNCH3: 1 << 4,
+  VELOCITY1: 1 << 5,
+  VELOCITY2: 1 << 6,
+  VELOCITY3: 1 << 7,
+  ITEMS: 1 << 9,
+  ONGROUND: 1 << 10,
+  INWATER: 1 << 11,
+  WEAPONFRAME: 1 << 12,
+  ARMOR: 1 << 13,
+  WEAPON: 1 << 14,
+};
+
+export const DEFAULT_VIEWHEIGHT = 22;

@@ -19,6 +19,25 @@ const MAX_CLIP_PLANES = 5;
 export const PLAYER_MINS = new Float32Array([-16, -16, -24]);
 export const PLAYER_MAXS = new Float32Array([16, 16, 32]);
 
+const CL_ROLLANGLE = 2.0;
+const CL_ROLLSPEED = 200;
+
+/**
+ * view.c V_CalcRoll
+ * @param {Float32Array|number[]} angles
+ * @param {Float32Array|number[]} velocity
+ * @returns {number}
+ */
+function calcRoll(angles, velocity) {
+  const { right } = angleVectors(angles);
+  const side = velocity[0] * right[0] + velocity[1] * right[1] + velocity[2] * right[2];
+  const sign = side < 0 ? -1 : 1;
+  let s = Math.abs(side);
+  let value = CL_ROLLANGLE;
+  if (s < CL_ROLLSPEED) value = (s * value) / CL_ROLLSPEED;
+  return value * sign;
+}
+
 /**
  * @param {Float32Array} inVel
  * @param {Float32Array} normal
@@ -64,6 +83,10 @@ export class PlayerMove {
     /** V_CalcBob cycle (radians-ish progress) */
     this._bobCycle = 0;
     this._bob = 0;
+    /** View punch (degrees) — from svc_clientdata / QC punchangle */
+    this.punchangle = new Float32Array(3);
+    /** View roll (degrees) from V_CalcRoll */
+    this.roll = 0;
   }
 
   /**
@@ -96,6 +119,16 @@ export class PlayerMove {
   }
 
   /**
+   * Apply view punch from clientdata / edict.
+   * @param {Float32Array|number[]} punch
+   */
+  setPunchangle(punch) {
+    this.punchangle[0] = punch[0] || 0;
+    this.punchangle[1] = punch[1] || 0;
+    this.punchangle[2] = punch[2] || 0;
+  }
+
+  /**
    * @param {number} pitch
    * @param {number} yaw
    */
@@ -111,7 +144,12 @@ export class PlayerMove {
    * @returns {{ eye: Float32Array, center: Float32Array, up: Float32Array }}
    */
   lookAtArgs() {
-    const { forward, up } = angleVectors([this.pitch, this.yaw, 0]);
+    // view.c V_CalcRefdef subset — punch + bob + roll
+    const pitch = this.pitch + this.punchangle[0];
+    const yaw = this.yaw + this.punchangle[1];
+    this.roll = calcRoll([0, this.yaw, 0], this.velocity);
+    const roll = this.roll + this.punchangle[2];
+    const { forward, up } = angleVectors([pitch, yaw, roll]);
     const eye = this.eye();
     return {
       eye,
@@ -126,7 +164,11 @@ export class PlayerMove {
 
   /**
    * @param {number} dt
-   * @param {{ forward: boolean, back: boolean, left: boolean, right: boolean, jump: boolean, up: boolean, down: boolean }} cmd
+   * @param {{
+   *   forward?: boolean, back?: boolean, left?: boolean, right?: boolean,
+   *   jump?: boolean, up?: boolean, down?: boolean,
+   *   forwardmove?: number, sidemove?: number, upmove?: number,
+   * }} cmd
    */
   update(dt, cmd) {
     this.impactedEdicts.clear();
@@ -200,7 +242,11 @@ export class PlayerMove {
 
   /**
    * @param {number} dt
-   * @param {{ forward: boolean, back: boolean, left: boolean, right: boolean, up: boolean, down: boolean }} cmd
+   * @param {{
+   *   forward?: boolean, back?: boolean, left?: boolean, right?: boolean,
+   *   up?: boolean, down?: boolean,
+   *   forwardmove?: number, sidemove?: number, upmove?: number,
+   * }} cmd
    */
   _noclipMove(dt, cmd) {
     const { forward, right } = angleVectors([this.pitch, this.yaw, 0]);
@@ -215,46 +261,58 @@ export class PlayerMove {
     const rl = Math.hypot(rH[0], rH[1]) || 1;
     rH[0] /= rl;
     rH[1] /= rl;
-    if (cmd.forward) {
-      mx += fH[0];
-      my += fH[1];
+
+    let fmove =
+      cmd.forwardmove !== undefined
+        ? cmd.forwardmove
+        : (cmd.forward ? SV_MAXSPEED : 0) - (cmd.back ? SV_MAXSPEED : 0);
+    let smove =
+      cmd.sidemove !== undefined
+        ? cmd.sidemove
+        : (cmd.right ? SV_MAXSPEED : 0) - (cmd.left ? SV_MAXSPEED : 0);
+    let umove =
+      cmd.upmove !== undefined
+        ? cmd.upmove
+        : (cmd.up ? SV_MAXSPEED : 0) - (cmd.down ? SV_MAXSPEED : 0);
+
+    mx = fH[0] * fmove + rH[0] * smove;
+    my = fH[1] * fmove + rH[1] * smove;
+    mz = forward[2] * fmove + umove;
+
+    const speed = Math.hypot(mx, my, mz);
+    if (speed > SV_MAXSPEED) {
+      const s = SV_MAXSPEED / speed;
+      mx *= s;
+      my *= s;
+      mz *= s;
     }
-    if (cmd.back) {
-      mx -= fH[0];
-      my -= fH[1];
-    }
-    if (cmd.right) {
-      mx += rH[0];
-      my += rH[1];
-    }
-    if (cmd.left) {
-      mx -= rH[0];
-      my -= rH[1];
-    }
-    if (cmd.up || cmd.jump) mz += 1;
-    if (cmd.down) mz -= 1;
-    const len = Math.hypot(mx, my, mz);
-    if (len > 0) {
-      const s = (SV_MAXSPEED * dt) / len;
-      this.origin[0] += mx * s;
-      this.origin[1] += my * s;
-      this.origin[2] += mz * s;
-    }
-    this.velocity[0] = this.velocity[1] = this.velocity[2] = 0;
+    this.origin[0] += mx * dt;
+    this.origin[1] += my * dt;
+    this.origin[2] += mz * dt;
+    this.velocity[0] = mx;
+    this.velocity[1] = my;
+    this.velocity[2] = mz;
+    this.onground = false;
   }
 
   /**
+   * SV_AirMove wish from usercmd.forwardmove/sidemove (or bool keys).
    * @param {number} dt
-   * @param {{ forward: boolean, back: boolean, left: boolean, right: boolean }} cmd
+   * @param {{
+   *   forward?: boolean, back?: boolean, left?: boolean, right?: boolean,
+   *   forwardmove?: number, sidemove?: number,
+   * }} cmd
    */
   _airMove(dt, cmd) {
     const { forward, right } = angleVectors([0, this.yaw, 0]); // yaw only for wish (walk)
-    let fmove = 0;
-    let smove = 0;
-    if (cmd.forward) fmove += SV_MAXSPEED;
-    if (cmd.back) fmove -= SV_MAXSPEED;
-    if (cmd.right) smove += SV_MAXSPEED;
-    if (cmd.left) smove -= SV_MAXSPEED;
+    let fmove =
+      cmd.forwardmove !== undefined
+        ? cmd.forwardmove
+        : (cmd.forward ? SV_MAXSPEED : 0) - (cmd.back ? SV_MAXSPEED : 0);
+    let smove =
+      cmd.sidemove !== undefined
+        ? cmd.sidemove
+        : (cmd.right ? SV_MAXSPEED : 0) - (cmd.left ? SV_MAXSPEED : 0);
 
     const wishvel = new Float32Array([
       forward[0] * fmove + right[0] * smove,

@@ -31,10 +31,11 @@
     }
     #sbar {
       position: fixed;
-      left: 0;
-      right: 0;
+      left: 50%;
       bottom: 0;
-      width: 100%;
+      transform: translateX(-50%);
+      /* Full width near 4:3; on widescreen keep a 4:3-wide bar (no stretch) */
+      width: min(100vw, calc(100vh * 4 / 3));
       height: auto;
       image-rendering: pixelated;
       image-rendering: crisp-edges;

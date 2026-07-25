@@ -1,6 +1,7 @@
 /**
  * Status bar (sbar.c) — draw health / armor / ammo / face from gfx.wad pics.
- * Renders to a 320-wide 2D canvas overlay, CSS-scaled to the viewport.
+ * Renders to a 320-wide 2D canvas overlay.
+ * CSS scales it to min(100vw, 100vh×4/3) so widescreen keeps a 4:3 bar width.
  */
 
 import { WadFile } from '../fs/WadFile.js';

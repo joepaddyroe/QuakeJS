@@ -367,6 +367,7 @@ export class Host {
 
       if (server) {
         const cmdButtons = server.lastCmd.buttons;
+        const frameDt = Math.min(dt, 0.1);
         server.syncClientEdict(1, {
           origin: player.origin,
           velocity: player.velocity,
@@ -377,21 +378,25 @@ export class Host {
           onground: player.onground,
           groundEntity: player.groundEntity,
         });
-        server.runClientThink(1, {
-          attack: !!(cmdButtons & 1) || attack,
-          jump: !!(cmdButtons & 2) || jump,
-        });
+        server.runClientThink(
+          1,
+          {
+            attack: !!(cmdButtons & 1) || attack,
+            jump: !!(cmdButtons & 2) || jump,
+          },
+          frameDt,
+        );
         server.applyClientEdict(1, player);
       }
 
       if (!intermission) {
         player.setAngles(this._pointer.pitch, this._pointer.yaw);
+        const lc = server?.lastCmd;
         player.update(dt, {
-          forward: kb.isDown('KeyW') || kb.isDown('ArrowUp'),
-          back: kb.isDown('KeyS') || kb.isDown('ArrowDown'),
-          left: kb.isDown('KeyA') || kb.isDown('ArrowLeft'),
-          right: kb.isDown('KeyD') || kb.isDown('ArrowRight'),
-          jump,
+          forwardmove: lc?.forwardmove ?? forwardmove,
+          sidemove: lc?.sidemove ?? sidemove,
+          upmove: lc?.upmove ?? upmove,
+          jump: !!(lc?.buttons & 2) || jump,
           up: jump,
           down:
             kb.isDown('ControlLeft') ||
@@ -400,6 +405,16 @@ export class Host {
         });
         this._pointer.yaw = player.yaw;
         this._pointer.pitch = player.pitch;
+        // View punch from protocol clientdata (preferred) or edict
+        const punch = this.client.world.punchangle;
+        if (punch[0] || punch[1] || punch[2]) {
+          player.setPunchangle(punch);
+        } else if (server) {
+          player.setPunchangle(server.getPunchangle(1));
+        }
+        if (this.client.world.viewheight) {
+          player.viewOfsZ = this.client.world.viewheight;
+        }
       }
 
       if (server) {
@@ -431,6 +446,7 @@ export class Host {
             this._pointer.yaw = applied.yaw;
             this._pointer.pitch = applied.pitch;
           }
+          server.runClientPostThink(1);
         }
       }
     } else if (!uiBlocking) {
