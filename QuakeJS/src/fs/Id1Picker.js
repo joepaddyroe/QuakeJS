@@ -69,7 +69,7 @@ export async function pickId1Directory() {
     }
   }
   if (!files.length) {
-    throw new Error('No pak0.pak / pak1.pak found in selected folder');
+    throw new Error('No pak0.pak / pak1.pak found in selected folder (prefer both; pak1 = full game)');
   }
   return files;
 }

@@ -1,6 +1,6 @@
 /**
  * Client entity / stats state from svc_spawnbaseline, fast updates, svc_clientdata.
- * Draw lists follow CL_RelinkEntities (cl_main.c) — only ents updated this frame.
+ * Draw lists follow CL_RelinkEntities (cl_main.c) — lerped origins between packets.
  */
 
 import { DEFAULT_VIEWHEIGHT } from '../protocol/Protocol.js';
@@ -37,12 +37,15 @@ export function emptyEntityState() {
  *   baseline: EntityState,
  *   origin: Float32Array,
  *   angles: Float32Array,
+ *   msg_origins: [Float32Array, Float32Array],
+ *   msg_angles: [Float32Array, Float32Array],
  *   modelindex: number,
  *   frame: number,
  *   colormap: number,
  *   skin: number,
  *   effects: number,
  *   msgtime: number,
+ *   forcelink: boolean,
  * }}
  */
 export function emptyClientEntity() {
@@ -50,12 +53,15 @@ export function emptyClientEntity() {
     baseline: emptyEntityState(),
     origin: new Float32Array(3),
     angles: new Float32Array(3),
+    msg_origins: [new Float32Array(3), new Float32Array(3)],
+    msg_angles: [new Float32Array(3), new Float32Array(3)],
     modelindex: 0,
     frame: 0,
     colormap: 0,
     skin: 0,
     effects: 0,
     msgtime: 0,
+    forcelink: true,
   };
 }
 
@@ -71,12 +77,26 @@ function skipFpBodyModel(model) {
   );
 }
 
+/**
+ * @param {number} a
+ * @param {number} b
+ * @param {number} f
+ */
+function lerpAngle(a, b, f) {
+  let d = b - a;
+  if (d > 180) d -= 360;
+  else if (d < -180) d += 360;
+  return a + f * d;
+}
+
 export class ClientWorld {
   constructor() {
     /** @type {ReturnType<typeof emptyClientEntity>[]} */
     this.entities = [];
-    /** Last svc_time (cl.mtime[0]) */
+    /** Last svc_time (cl.mtime[0]) — entities updated this packet */
     this.mtime = 0;
+    /** cl.mtime[1] — previous packet time */
+    this.mtime1 = 0;
     /** Local player edict / view entity (usually 1) */
     this.viewentity = 1;
     this.viewheight = DEFAULT_VIEWHEIGHT;
@@ -113,11 +133,79 @@ export class ClientWorld {
   clear() {
     this.entities.length = 0;
     this.mtime = 0;
+    this.mtime1 = 0;
     this.viewentity = 1;
     this.viewheight = DEFAULT_VIEWHEIGHT;
     this.idealpitch = 0;
     this.punchangle[0] = this.punchangle[1] = this.punchangle[2] = 0;
     this.items = 0;
+  }
+
+  /**
+   * Push new svc_time (CL_ParseServerMessage case svc_time).
+   * @param {number} t
+   */
+  pushTime(t) {
+    this.mtime1 = this.mtime;
+    this.mtime = t;
+  }
+
+  /**
+   * CL_LerpPoint — fraction between mtime[1] and mtime[0] for cl.time.
+   * @param {number} time cl.time
+   * @param {boolean} [nolerp=false] true when local SV active (sv.active)
+   * @returns {number} frac 0..1
+   */
+  lerpFrac(time, nolerp = false) {
+    if (nolerp) return 1;
+    let f = this.mtime - this.mtime1;
+    if (!f) return 1;
+    if (f > 0.1) {
+      // dropped packet or start of demo
+      this.mtime1 = this.mtime - 0.1;
+      f = 0.1;
+    }
+    let frac = (time - this.mtime1) / f;
+    if (frac < 0) frac = 0;
+    else if (frac > 1) frac = 1;
+    return frac;
+  }
+
+  /**
+   * CL_RelinkEntities — lerp msg_origins into origin for drawing / view.
+   * @param {number} time cl.time
+   * @param {boolean} [nolerp=false]
+   */
+  relinkEntities(time, nolerp = false) {
+    const frac = this.lerpFrac(time, nolerp);
+    const mtime0 = this.mtime;
+    for (let i = 1; i < this.entities.length; i++) {
+      const ent = this.entities[i];
+      if (!ent || ent.msgtime !== mtime0) continue;
+      if (ent.forcelink) {
+        ent.origin[0] = ent.msg_origins[0][0];
+        ent.origin[1] = ent.msg_origins[0][1];
+        ent.origin[2] = ent.msg_origins[0][2];
+        ent.angles[0] = ent.msg_angles[0][0];
+        ent.angles[1] = ent.msg_angles[0][1];
+        ent.angles[2] = ent.msg_angles[0][2];
+        continue;
+      }
+      let f = frac;
+      for (let j = 0; j < 3; j++) {
+        const d = ent.msg_origins[0][j] - ent.msg_origins[1][j];
+        if (d > 100 || d < -100) f = 1;
+      }
+      for (let j = 0; j < 3; j++) {
+        ent.origin[j] =
+          ent.msg_origins[1][j] + f * (ent.msg_origins[0][j] - ent.msg_origins[1][j]);
+        ent.angles[j] = lerpAngle(
+          ent.msg_angles[1][j],
+          ent.msg_angles[0][j],
+          f,
+        );
+      }
+    }
   }
 
   /**
@@ -142,7 +230,6 @@ export class ClientWorld {
       if (!model || model[0] === '*' || !model.endsWith('.mdl')) continue;
       if (skipFpBodyModel(model)) continue;
       let yaw = ent.angles[1] || 0;
-      // Approximate model EF_ROTATE for bonus items (ammo/weapon/armor)
       if (
         model.includes('armor') ||
         model.includes('backpack') ||
@@ -194,6 +281,34 @@ export class ClientWorld {
           ent.angles[2] || 0,
         ]),
         frame: ent.frame | 0,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Brush submodels (*N) for doors/plats — from client entity state.
+   * @param {string[]} modelPrecache
+   * @param {number} [maxSubmodels]
+   * @returns {{ submodel: number, origin: Float32Array, edict: number }[]}
+   */
+  getBrushDrawList(modelPrecache, maxSubmodels = 256) {
+    /** @type {{ submodel: number, origin: Float32Array, edict: number }[]} */
+    const out = [];
+    const mtime = this.mtime;
+    for (let i = 1; i < this.entities.length; i++) {
+      const ent = this.entities[i];
+      if (!ent || ent.msgtime !== mtime) continue;
+      const mi = ent.modelindex | 0;
+      if (!mi || mi >= modelPrecache.length) continue;
+      const model = modelPrecache[mi];
+      if (!model || model[0] !== '*') continue;
+      const sub = parseInt(model.slice(1), 10);
+      if (!sub || sub >= maxSubmodels) continue;
+      out.push({
+        submodel: sub,
+        origin: new Float32Array([ent.origin[0], ent.origin[1], ent.origin[2]]),
+        edict: i,
       });
     }
     return out;

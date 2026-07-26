@@ -126,23 +126,8 @@ async function main() {
     console.warn('Console load failed:', err);
   }
 
-  const mapCandidates = ['maps/start.bsp', 'maps/e1m1.bsp'];
-  let loaded = false;
-  let lastErr = '';
-  for (const map of mapCandidates) {
-    if (!fs.has(map)) continue;
-    try {
-      renderer.loadMap(fs, map, sound);
-      loaded = true;
-      break;
-    } catch (err) {
-      lastErr = err instanceof Error ? err.message : String(err);
-      console.error(err);
-    }
-  }
-  if (!loaded) {
-    console.warn('Map load failed, using demo room:', lastErr);
-  }
+  // Vanilla: do not load a map here — quake.rc → startdemos plays demo1/2/3.
+  // New Game / map command loads via Host.changeMap.
 
   const host = new Host({
     canvas,
@@ -161,7 +146,7 @@ async function main() {
   hostRef = host;
   host.init();
   host.syncPointerFromCamera();
-  menu.openMain();
+  // Menu stays closed so startup demos can play (Esc opens menu)
 
   const loop = new GameLoop(host);
   loop.start();

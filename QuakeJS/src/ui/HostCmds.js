@@ -5,6 +5,7 @@
 import { Cvar } from '../core/Cvar.js';
 import { listStored } from '../app/ConfigIO.js';
 import { keyNameToCode } from '../input/KeyBindings.js';
+import { ca } from '../client/Client.js';
 
 /**
  * @param {import('../input/KeyBindings.js').KeyBindings} keys
@@ -46,6 +47,7 @@ export function registerHostCommands({ cmd, cvars, con, host, sound }) {
   if (vol?.onChange) vol.onChange(vol);
 
   cvars.register(new Cvar('skill', '1', { archive: true }));
+  cvars.register(new Cvar('registered', '0'));
 
   cmd.add('echo', (args) => {
     print(args.slice(1).join(' ') + '\n');
@@ -129,6 +131,81 @@ export function registerHostCommands({ cmd, cvars, con, host, sound }) {
   cmd.add('writeconfig', () => {
     host.writeConfiguration();
     print('Wrote config.cfg\n');
+  });
+
+  cmd.add('exec', (args) => {
+    const name = args[1];
+    if (!name) {
+      print('exec <filename> : execute a script file\n');
+      return;
+    }
+    host.execScript(name);
+  });
+
+  cmd.add('stuffcmds', () => {
+    /* command-line statements — no-op in browser */
+  });
+
+  /** @type {Map<string, string>} */
+  const aliases = new Map();
+  cmd.add('alias', (args) => {
+    const name = (args[1] || '').toLowerCase();
+    if (!name) {
+      print('Current alias list:\n');
+      for (const [k, v] of aliases) print(`  ${k} : ${v}\n`);
+      return;
+    }
+    if (args.length === 2) {
+      const v = aliases.get(name);
+      if (v) print(`  ${name} : ${v}\n`);
+      else print(`  ${name} : <not defined>\n`);
+      return;
+    }
+    aliases.set(name, args.slice(2).join(' '));
+    if (!cmd.has(name)) {
+      cmd.add(name, () => {
+        const body = aliases.get(name);
+        if (!body) return;
+        cmd.addText(body);
+        cmd.executeBuffer(
+          (a) => host._handleCvarArgs(a),
+          (msg) => print(msg),
+        );
+      });
+    }
+  });
+
+  cmd.add('wait', () => {
+    /* frame delay — no-op; next buffered cmds still run this frame */
+  });
+
+  cmd.add('startdemos', (args) => {
+    const names = args.slice(1);
+    if (!names.length) {
+      print('startdemos <demo1> [demo2 …]\n');
+      return;
+    }
+    host.demos = names.map((n) => n.replace(/\.dem$/i, ''));
+    print(`${host.demos.length} demo(s) in loop\n`);
+    const inGame =
+      !!host._renderer.server &&
+      host.client.state === ca.connected &&
+      !host.demoPlayer.playing;
+    if (!inGame) {
+      host.demonum = 0;
+      host.nextDemo();
+    } else {
+      host.demonum = -1;
+    }
+  });
+
+  cmd.add('demos', () => {
+    if (host.demonum === -1) host.demonum = 0;
+    host.nextDemo();
+  });
+
+  cmd.add('stopdemo', () => {
+    host.stopDemoPlayback();
   });
 
   cmd.add('impulse', (args) => {

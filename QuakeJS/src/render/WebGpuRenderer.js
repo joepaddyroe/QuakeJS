@@ -13,6 +13,7 @@ import { DynamicLights } from './DynamicLights.js';
 import { BspModel } from './models/BspModel.js';
 import { PlayerMove } from '../server/PlayerMove.js';
 import { Server } from '../server/Server.js';
+import { World } from '../server/World.js';
 
 export class WebGpuRenderer {
   /**
@@ -38,6 +39,9 @@ export class WebGpuRenderer {
     this.server = null;
     /** @type {import('../client/ClientWorld.js').ClientWorld|null} */
     this.clientWorld = null;
+    /** Demo/remote model precache (overrides server when set) */
+    /** @type {string[]|null} */
+    this.clientModelPrecache = null;
     /** @type {'demo'|'world'} */
     this.mode = 'demo';
     this.mapName = '';
@@ -127,8 +131,9 @@ export class WebGpuRenderer {
    * @param {import('../fs/FileSystem.js').FileSystem} fs
    * @param {string} [mapPath='maps/start.bsp']
    * @param {import('../audio/SoundSystem.js').SoundSystem|null} [sound]
+   * @param {{ playback?: boolean }} [opts] playback = demo/client-only (no local SV)
    */
-  loadMap(fs, mapPath = 'maps/start.bsp', sound = null) {
+  loadMap(fs, mapPath = 'maps/start.bsp', sound = null, opts = {}) {
     if (sound) sound.stopAll();
     this._particles.clear();
     this._spriteRend.clear();
@@ -140,12 +145,19 @@ export class WebGpuRenderer {
     this._worldRend.buildFromBsp(bsp, palette);
     this._aliasRend.setFilesystem(fs, palette);
     this._spriteRend.setFilesystem(fs, palette);
-    this.server = new Server(bsp, fs, mapPath, sound, this._lightStyles);
-    this.server.particles = this._particles;
-    this.server.dlights = this._dlights;
+    if (opts.playback) {
+      // Demo / remote client: world draw only — entity state comes from net messages
+      this.server = null;
+      this.collision = new World(bsp);
+      this.player = new PlayerMove(this.collision);
+    } else {
+      this.server = new Server(bsp, fs, mapPath, sound, this._lightStyles);
+      this.server.particles = this._particles;
+      this.server.dlights = this._dlights;
+      this.collision = this.server.world;
+      this.player = new PlayerMove(this.collision);
+    }
     this._worldRend.invalidateLightmapCache();
-    this.collision = this.server.world;
-    this.player = new PlayerMove(this.collision);
     this.mode = 'world';
     this.mapName = mapPath;
     this.faceCount = this._worldRend.faceCount;
@@ -179,7 +191,13 @@ export class WebGpuRenderer {
     if (this.mode === 'world' && this.player) {
       if (this.server) this.server.clientTime = this._time;
       this._particles.update(dt);
-      const brushes = this.server ? this.server.getBrushDrawList() : [];
+      const precache =
+        this.clientModelPrecache || this.server?.modelPrecache;
+      const brushes = this.server
+        ? this.server.getBrushDrawList()
+        : this.clientWorld && precache
+          ? this.clientWorld.getBrushDrawList(precache)
+          : [];
       const { aliases, sprites } = this._entityDrawLists();
       const cam = this.player.lookAtArgs();
       this._worldRend.draw(
@@ -250,7 +268,8 @@ export class WebGpuRenderer {
    * }}
    */
   _entityDrawLists() {
-    const precache = this.server?.modelPrecache;
+    const precache =
+      this.clientModelPrecache || this.server?.modelPrecache;
     const cw = this.clientWorld;
     if (cw && precache && cw.mtime > 0) {
       return {
@@ -271,7 +290,8 @@ export class WebGpuRenderer {
    */
   _viewWeapon(player) {
     const cw = this.clientWorld;
-    const precache = this.server?.modelPrecache;
+    const precache =
+      this.clientModelPrecache || this.server?.modelPrecache;
     if (cw && precache && cw.mtime > 0) {
       if ((cw.stats.health | 0) <= 0) return null;
       const mi = cw.stats.weaponmodel | 0;

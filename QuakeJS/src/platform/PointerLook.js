@@ -14,6 +14,10 @@ export class PointerLook {
     this._locked = false;
     /** Fire / attack (QC button0) */
     this.attack = false;
+    /** Mouse2 bound to +forward in default.cfg */
+    this.forward = false;
+    /** Mouse3 / +mlook latch (look always on while locked) */
+    this.mlook = false;
 
     this._onClick = () => {
       if (!this._locked) {
@@ -33,9 +37,13 @@ export class PointerLook {
     };
     this._onMouseDown = (e) => {
       if (e.button === 0) this.attack = true;
+      if (e.button === 1) this.forward = true;
+      if (e.button === 2) this.mlook = true;
     };
     this._onMouseUp = (e) => {
       if (e.button === 0) this.attack = false;
+      if (e.button === 1) this.forward = false;
+      if (e.button === 2) this.mlook = false;
     };
   }
 
@@ -49,10 +57,13 @@ export class PointerLook {
       document.exitPointerLock?.();
     }
     this.attack = false;
+    this.forward = false;
+    this.mlook = false;
   }
 
   attach() {
     this._canvas.addEventListener('click', this._onClick);
+    this._canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     document.addEventListener('pointerlockchange', this._onLockChange);
     document.addEventListener('mousemove', this._onMouseMove);
     document.addEventListener('mousedown', this._onMouseDown);

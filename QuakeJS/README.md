@@ -4,7 +4,7 @@ Browser-based port of Quake 1 (WinQuake / GLQuake architecture), written in Java
 
 ## Requirements
 
-- A legally obtained Quake `id1` install — need at least **`pak0.pak`** (and ideally **`pak1.pak`**)
+- A legally obtained Quake `id1` install — **`pak0.pak`** (shareware) and preferably **`pak1.pak`** (full registered game; searched first when both are present)
   - Place them under `assets/id1/`, **or**
   - Use the in-page file picker when fetch fails (files stay local; nothing is uploaded)
 - A browser with **WebGPU** enabled (current Chrome / Edge recommended)
@@ -17,9 +17,11 @@ cd QuakeJS
 python -m http.server 8080
 ```
 
-Open `http://127.0.0.1:8080/index.html`. Click the canvas for pointer lock, then Esc for the menu or `` ` `` for the console.
+Open `http://127.0.0.1:8080/index.html`. On boot the game runs **`quake.rc`** like vanilla — including the **`startdemos demo1 demo2 demo3`** attract loop from the PAKs. Click the canvas for pointer lock; Esc opens the menu (New Game stops demos and starts a map); `` ` `` opens the console.
 
-New game from the menu loads `start` / episode maps from your PAKs.
+### Optional music
+
+CD tracks are not in the PAKs. To enable BGM, put rip files under `music/` as `track02.ogg`, `track04.ogg`, … and list their numbers in `music/tracks.json` (e.g. `[2, 4, 5, 9]`). With an empty list (default), the game stays silent and does not request missing files.
 
 ## Controls
 
@@ -68,7 +70,7 @@ Last audited **2026-07-25** against `Quake-master/WinQuake`. Full gap analysis l
 
 ```
 Host / frame         ███████░░░  ~70%   Host_Init/Shutdown; protocol move + clientdata flush
-Filesystem (PAK)     █████████░  ~90%   pak0+pak1; file-picker fallback when fetch fails
+Filesystem (PAK)     ██████████  ~95%   pak1-first; registered (gfx/pop.lmp); picker fallback
 Models (BSP/MDL/SPR) ████████░░  ~80%   BSP + alias MDL + SPR
 WebGPU render        ██████████  ~95%   world+brush+alias+sprites+lightstyles+dlights+view weapon+particles+frustum
 Server / world       ███████░░░  ~70%   hull walk + pushers + brush clip + walkmove / STEP freefall

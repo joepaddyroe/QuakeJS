@@ -72,16 +72,30 @@ export class Cmd {
   }
 
   /**
-   * Queue text (may contain `;` or newlines).
+   * Queue text (may contain `;` or newlines). Semicolons inside quotes are kept.
    * @param {string} text
    */
   addText(text) {
     if (!text) return;
-    const parts = text.split(/[\n;]+/);
-    for (const p of parts) {
-      const t = p.trim();
-      if (t) this._buf.push(t);
+    let cur = '';
+    let inQuote = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (c === '"') {
+        inQuote = !inQuote;
+        cur += c;
+        continue;
+      }
+      if (!inQuote && (c === '\n' || c === '\r' || c === ';')) {
+        const t = cur.trim();
+        if (t) this._buf.push(t);
+        cur = '';
+        continue;
+      }
+      cur += c;
     }
+    const t = cur.trim();
+    if (t) this._buf.push(t);
   }
 
   /**

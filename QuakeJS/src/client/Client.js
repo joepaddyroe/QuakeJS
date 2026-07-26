@@ -26,6 +26,8 @@ export class Client {
     /** @type {import('../net/NetLoop.js').LoopSocket|null} */
     this.socket = null;
     this.mtime = 0;
+    /** Client simulation clock (cl.time) — advances with host frametime */
+    this.time = 0;
     this._msg = new SizeBuf(8192);
     this._out = new SizeBuf(8192);
     /** Drop first two moves like CL_SendMove */
@@ -33,6 +35,10 @@ export class Client {
     /** Last viewangles sent (pitch, yaw, roll) */
     this.viewangles = new Float32Array(3);
     this.world = new ClientWorld();
+    /** Model precache from svc_serverinfo (demo / remote); index 0 unused */
+    /** @type {string[]} */
+    this.modelPrecache = [''];
+    this.signon = 0;
   }
 
   /**
@@ -75,8 +81,8 @@ export class Client {
         ...this.hooks,
         world: this.world,
         time: (t) => {
+          this.world.pushTime(t);
           this.mtime = t;
-          this.world.mtime = t;
           this.hooks.time?.(t);
         },
       });

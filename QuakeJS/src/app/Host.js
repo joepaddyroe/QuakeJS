@@ -75,6 +75,7 @@ export class Host {
     this.demoRecorder = new DemoRecorder();
     this.demoPlayer = new DemoPlayer();
     this._demoAngles = new Float32Array(3);
+    this._demoAnglesPrev = new Float32Array(3);
     this._demoMsg = new SizeBuf(8192);
 
     this.cmd = new Cmd();
@@ -115,9 +116,26 @@ export class Host {
             player.yaw = yaw;
           }
         },
+        serverinfo: (info) => {
+          this._onServerInfo(info);
+        },
+        signonnum: (n) => {
+          this.client.signon = n | 0;
+        },
+        entityUpdate: () => {
+          if (this.client.signon === 3) this.client.signon = 4;
+        },
       },
     });
     this._renderer.clientWorld = this.client.world;
+
+    /** @type {string[]} */
+    this.demos = [];
+    /** -1 = demos off; else index into demos for CL_NextDemo */
+    this.demonum = -1;
+    this._demoTime = 0;
+    this._demoMap = '';
+    this._savedDemonum = -1;
 
     registerHostCommands({
       cmd: this.cmd,
@@ -175,6 +193,13 @@ export class Host {
   init() {
     if (this._initialized) return;
     this.con.print('Host_Init: COM / filesystem ready\n');
+    if (this._fs.registered) {
+      this.cvars.set('registered', '1');
+      this.con.print('Playing registered version.\n');
+    } else {
+      this.cvars.set('registered', '0');
+      this.con.print('Playing shareware version.\n');
+    }
     this.con.print('Host_Init: Cmd / Cvar / Console\n');
     this.con.print('Host_Init: Menu / Sbar / Overlay\n');
     this.con.print('Host_Init: NET / SV / CL (loopback)\n');
@@ -182,26 +207,51 @@ export class Host {
     this.con.print('Host_Init: S / IN\n');
     this._cd.init();
     this.con.print('Host_Init: CDAudio stub\n');
-    this.execConfigs();
-    this._connectLoopback();
+    // Vanilla: Cbuf_InsertText("exec quake.rc\n") → default.cfg, config, autoexec, startdemos
+    this.execScript('quake.rc');
+    // Browser UX: keep WASD after default.cfg (classic arrows + mouse still work)
+    this.keys.bind('w', '+forward');
+    this.keys.bind('s', '+back');
+    this.keys.bind('a', '+moveleft');
+    this.keys.bind('d', '+moveright');
     this._initialized = true;
     this.con.print('========QuakeJS Initialized=========\n');
     this.con.print('Ready. Esc = menu, ` = console.\n');
   }
 
   /**
-   * exec config.cfg then autoexec.cfg from localStorage.
+   * exec <file> from PAK or localStorage (quake.rc / default.cfg / config.cfg).
+   * @param {string} name
+   */
+  execScript(name) {
+    let text = '';
+    try {
+      if (this._fs.has(name)) text = this._fs.loadText(name);
+    } catch {
+      /* ignore */
+    }
+    if (!text) {
+      const fromStore = readConfig(name);
+      if (fromStore) text = fromStore;
+    }
+    if (!text) {
+      this.con.print(`exec: couldn't exec ${name}\n`);
+      return;
+    }
+    this.con.print(`execing ${name}\n`);
+    this.cmd.addText(text);
+    this.cmd.executeBuffer(
+      (args) => this._handleCvarArgs(args),
+      (msg) => this.con.print(msg),
+    );
+  }
+
+  /**
+   * exec config.cfg then autoexec.cfg from localStorage (legacy helper).
    */
   execConfigs() {
     for (const name of ['config.cfg', 'autoexec.cfg']) {
-      const text = readConfig(name);
-      if (!text) continue;
-      this.con.print(`execing ${name}\n`);
-      this.cmd.addText(text);
-      this.cmd.executeBuffer(
-        (args) => this._handleCvarArgs(args),
-        (msg) => this.con.print(msg),
-      );
+      this.execScript(name);
     }
   }
 
@@ -243,6 +293,8 @@ export class Host {
         forwardmove: 0,
         sidemove: 0,
         upmove: 0,
+        yawDelta: 0,
+        pitchDelta: 0,
         attack: false,
         jump: false,
         down: false,
@@ -256,8 +308,16 @@ export class Host {
     if (this.keys.isDown(kb, ptr, 'back')) forwardmove -= 400;
     if (this.keys.isDown(kb, ptr, 'moveleft')) sidemove -= 350;
     if (this.keys.isDown(kb, ptr, 'moveright')) sidemove += 350;
+    // Vanilla keyboard look / turn (default.cfg LEFTARROW/RIGHTARROW)
+    let yawDelta = 0;
+    let pitchDelta = 0;
+    if (this.keys.isDown(kb, ptr, 'left')) yawDelta += 140;
+    if (this.keys.isDown(kb, ptr, 'right')) yawDelta -= 140;
+    if (this.keys.isDown(kb, ptr, 'lookup')) pitchDelta -= 140;
+    if (this.keys.isDown(kb, ptr, 'lookdown')) pitchDelta += 140;
     const jump = this.keys.isDown(kb, ptr, 'jump');
     const down = this.keys.isDown(kb, ptr, 'movedown');
+    if (this.keys.isDown(kb, ptr, 'moveup')) upmove += 200;
     if (jump) upmove += 200;
     if (down) upmove -= 200;
     const impulse =
@@ -267,6 +327,8 @@ export class Host {
       forwardmove,
       sidemove,
       upmove,
+      yawDelta,
+      pitchDelta,
       attack: this.keys.isDown(kb, ptr, 'attack'),
       jump,
       down,
@@ -316,39 +378,177 @@ export class Host {
    * @param {string} name
    */
   playDemo(name) {
-    this.demoPlayer.open(name);
-    if (this.demoPlayer.cdtrack > 0) {
-      this._cd.play(this.demoPlayer.cdtrack, true);
+    try {
+      this.demoPlayer.stop();
+      this.client.world.clear();
+      this.client.signon = 0;
+      this.client.mtime = 0;
+      this.client.time = 0;
+      this.client.modelPrecache = [''];
+      this._renderer.clientModelPrecache = null;
+      this._demoTime = 0;
+      this._demoAngles.fill(0);
+      this._demoAnglesPrev.fill(0);
+      this._demoMap = '';
+      this.demoPlayer.open(name, this._fs);
+      if (this.demoPlayer.cdtrack > 0) {
+        this._cd.play(this.demoPlayer.cdtrack, true);
+      }
+      this.con.print(`Playing demo from ${this.demoPlayer.name}.\n`);
+    } catch (err) {
+      this.con.print(
+        `ERROR: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+      this.demonum = -1;
     }
-    this.con.print(`Playing demo (freeze sim): ${this.demoPlayer.name}\n`);
+  }
+
+  /** CL_NextDemo — queue playdemo for the next name in the loop */
+  nextDemo() {
+    if (this.demonum === -1) return;
+    if (!this.demos.length) {
+      this.con.print('No demos listed with startdemos\n');
+      this.demonum = -1;
+      return;
+    }
+    if (this.demonum >= this.demos.length) this.demonum = 0;
+    const name = this.demos[this.demonum];
+    this.demonum += 1;
+    this.playDemo(name);
+  }
+
+  stopDemoPlayback() {
+    if (this.demoPlayer.playing) this.demoPlayer.stop();
+    this.demonum = -1;
+    this._cd.stop();
+    this._renderer.clientModelPrecache = null;
   }
 
   /**
-   * Feed one demo message per frame into client parse.
+   * svc_serverinfo from demo / remote — load world BSP for playback.
+   * @param {{
+   *   version: number,
+   *   maxclients: number,
+   *   gametype: number,
+   *   levelname: string,
+   *   models: string[],
+   *   sounds: string[],
+   * }} info
+   */
+  _onServerInfo(info) {
+    this.client.modelPrecache = info.models.slice();
+    this._renderer.clientModelPrecache = this.client.modelPrecache;
+    this.client.world.clear();
+    this.client.signon = 0;
+    const mapModel = info.models[1] || '';
+    if (!mapModel || mapModel[0] === '*') return;
+    const short = mapModel.replace(/^maps\//i, '').replace(/\.bsp$/i, '');
+    if (short === this._demoMap && this._renderer.mode === 'world') {
+      this.con.print(`${info.levelname}\n`);
+      return;
+    }
+    this._demoMap = short;
+    this.con.print(`${info.levelname}\n`);
+    try {
+      this._renderer.loadMap(this._fs, `maps/${short}.bsp`, this._sound, {
+        playback: true,
+      });
+      this.client.state = ca.connected;
+      this._renderer.clientModelPrecache = this.client.modelPrecache;
+    } catch (err) {
+      this.con.print(
+        `Demo map load failed: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
+
+  /**
+   * Feed demo messages (CL_GetMessage + CL_RelinkEntities timing).
    * @param {number} dt
    */
   _runDemoPlayback(dt) {
-    void dt;
-    if (!this.demoPlayer.readMessage(this._demoMsg, this._demoAngles)) {
-      this.con.print('Demo finished\n');
-      this._cd.stop();
-      return;
+    // cl.time advances every frame; messages gated by mtime[0] after signon
+    this._demoTime += dt;
+    this.client.time = this._demoTime;
+
+    let reads = 0;
+    while (this.demoPlayer.playing && reads < 64) {
+      // Vanilla: only wait once cls.signon == SIGNONS (4)
+      if (
+        this.client.signon >= 4 &&
+        this.client.mtime > 0 &&
+        this._demoTime <= this.client.mtime
+      ) {
+        break;
+      }
+
+      this._demoAnglesPrev[0] = this._demoAngles[0];
+      this._demoAnglesPrev[1] = this._demoAngles[1];
+      this._demoAnglesPrev[2] = this._demoAngles[2];
+
+      if (!this.demoPlayer.readMessage(this._demoMsg, this._demoAngles)) {
+        this.con.print('Demo finished\n');
+        this._cd.stop();
+        if (this.demonum !== -1) this.nextDemo();
+        return;
+      }
+
+      parseServerMessage(this._demoMsg, {
+        ...this.client.hooks,
+        world: this.client.world,
+        time: (t) => {
+          if (!(this.client.mtime > 0)) this._demoTime = t;
+          this.client.world.pushTime(t);
+          this.client.mtime = t;
+          this.client.time = this._demoTime;
+        },
+        serverinfo: (info) => {
+          this._onServerInfo(info);
+        },
+        signonnum: (n) => {
+          this.client.signon = n | 0;
+        },
+        entityUpdate: () => {
+          // Match CL_ParseUpdate — bump SIGNONS-1 → SIGNONS on first ent update
+          if (this.client.signon === 3) this.client.signon = 4;
+        },
+      });
+      reads += 1;
     }
-    this._pointer.pitch = this._demoAngles[0];
-    this._pointer.yaw = this._demoAngles[1];
+
+    const world = this.client.world;
+    world.relinkEntities(this._demoTime);
+
+    const frac = world.lerpFrac(this._demoTime);
+    let pitch = this._demoAnglesPrev[0];
+    let yaw = this._demoAnglesPrev[1];
+    {
+      let dp = this._demoAngles[0] - this._demoAnglesPrev[0];
+      let dy = this._demoAngles[1] - this._demoAnglesPrev[1];
+      if (dp > 180) dp -= 360;
+      else if (dp < -180) dp += 360;
+      if (dy > 180) dy -= 360;
+      else if (dy < -180) dy += 360;
+      pitch = this._demoAnglesPrev[0] + frac * dp;
+      yaw = this._demoAnglesPrev[1] + frac * dy;
+    }
+    this._pointer.pitch = pitch;
+    this._pointer.yaw = yaw;
+
     const player = this._renderer.player;
     if (player) {
-      player.pitch = this._demoAngles[0];
-      player.yaw = this._demoAngles[1];
+      player.pitch = pitch;
+      player.yaw = yaw;
+      const ent = world.entities[world.viewentity];
+      if (ent && ent.msgtime === world.mtime) {
+        player.origin[0] = ent.origin[0];
+        player.origin[1] = ent.origin[1];
+        player.origin[2] = ent.origin[2];
+        player._smoothZ = ent.origin[2];
+        player.viewOfsZ = world.viewheight;
+        player.setPunchangle(world.punchangle);
+      }
     }
-    parseServerMessage(this._demoMsg, {
-      ...this.client.hooks,
-      world: this.client.world,
-      time: (t) => {
-        this.client.mtime = t;
-        this.client.world.mtime = t;
-      },
-    });
   }
 
   /**
@@ -508,6 +708,13 @@ export class Host {
 
     if (worldMode && player && !uiBlocking) {
       const mv = this._sampleMove(false);
+      if (mv.yawDelta || mv.pitchDelta) {
+        this._pointer.yaw += (mv.yawDelta || 0) * dt;
+        this._pointer.pitch += (mv.pitchDelta || 0) * dt;
+        const limit = 89;
+        if (this._pointer.pitch > limit) this._pointer.pitch = limit;
+        if (this._pointer.pitch < -limit) this._pointer.pitch = -limit;
+      }
       this.client.sendMove({
         forwardmove: mv.forwardmove,
         sidemove: mv.sidemove,
@@ -544,6 +751,18 @@ export class Host {
     }
 
     this.client.readPackets();
+    this.client.time += dt;
+    this.client.world.relinkEntities(this.client.time, false);
+    // Keep view origin in sync with lerped entity (and stair-smooth lock)
+    if (worldMode && player) {
+      const ent = this.client.world.entities[this.client.world.viewentity];
+      if (ent && ent.msgtime === this.client.world.mtime) {
+        player.origin[0] = ent.origin[0];
+        player.origin[1] = ent.origin[1];
+        player.origin[2] = ent.origin[2];
+        player._smoothZ = ent.origin[2];
+      }
+    }
     this._cd.update();
     this._overlay?.frame(dt);
     this._renderer.frame(width, height, dt);
@@ -644,6 +863,8 @@ export class Host {
       return;
     }
     if (this._mapLoading) return;
+    this.stopDemoPlayback();
+    this.demonum = -1;
     this._mapLoading = true;
     this.con.print(`[host] loading ${path}\n`);
     console.info(`[host] loading ${path}`);
@@ -681,8 +902,11 @@ export class Host {
     const demoPlaying = this.demoPlayer.playing;
 
     if (demoPlaying) {
-      this._runDemoPlayback(dt);
+      if (!uiBlocking) this._runDemoPlayback(dt);
+      this._cd.update();
+      this._overlay?.frame(dt);
       this._renderer.frame(width, height, dt);
+      if (this._menu) this._menu.frame(dt);
       this.con.frame(dt);
       return;
     }
@@ -718,6 +942,13 @@ export class Host {
     const jump = mv.jump;
 
     if (worldMode && player && !uiBlocking) {
+      if (mv.yawDelta || mv.pitchDelta) {
+        this._pointer.yaw += (mv.yawDelta || 0) * dt;
+        this._pointer.pitch += (mv.pitchDelta || 0) * dt;
+        const limit = 89;
+        if (this._pointer.pitch > limit) this._pointer.pitch = limit;
+        if (this._pointer.pitch < -limit) this._pointer.pitch = -limit;
+      }
       if (server && this._renderer.collision) {
         this._renderer.collision.brushes = server.getBrushDrawList();
       }
@@ -859,6 +1090,10 @@ export class Host {
       }
       this.client.readPackets();
     }
+
+    this.client.time += dt;
+    // Local SV: nolerp (sv.active); still snap msg_origins → origin for client draw
+    this.client.world.relinkEntities(this.client.time, !!server);
 
     this._cd.update();
     this._overlay?.frame(dt);

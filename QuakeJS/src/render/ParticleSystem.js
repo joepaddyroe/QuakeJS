@@ -14,6 +14,12 @@ const PT_GRAV = 1;
 const PT_STATIC = 2;
 const PT_EXPLODE = 3;
 const PT_EXPLODE2 = 4;
+const PT_FIRE = 5;
+
+/** r_part.c ramp tables */
+const RAMP1 = [0x6f, 0x6d, 0x6b, 0x69, 0x67, 0x65, 0x63, 0x61];
+const RAMP2 = [0x6f, 0x6e, 0x6d, 0x6c, 0x6b, 0x6a, 0x68, 0x66];
+const RAMP3 = [0x6d, 0x6b, 6, 5, 4, 3];
 
 const WGSL = /* wgsl */ `
 struct Uniforms { viewProj : mat4x4f, };
@@ -182,8 +188,9 @@ export class ParticleSystem {
       const p = this._alloc();
       if (!p) return;
       if (count === 1024) {
+        // rocket / grenade explosion — die early via ramp in update()
         p.die = this._time + 5;
-        p.color = 0x6f;
+        p.color = RAMP1[0];
         p.ramp = Math.random() * 4;
         p.type = i & 1 ? PT_EXPLODE : PT_EXPLODE2;
         p.org[0] = org[0] + (Math.random() * 32 - 16);
@@ -196,6 +203,7 @@ export class ParticleSystem {
         p.die = this._time + 0.1 * ((Math.random() * 5) | 0);
         p.color = (color & ~7) + ((Math.random() * 8) | 0);
         p.type = PT_SLOWGRAV;
+        p.ramp = 0;
         p.org[0] = org[0] + ((Math.random() * 16) | 0) - 8;
         p.org[1] = org[1] + ((Math.random() * 16) | 0) - 8;
         p.org[2] = org[2] + ((Math.random() * 16) | 0) - 8;
@@ -215,11 +223,17 @@ export class ParticleSystem {
   }
 
   /**
+   * R_DrawParticles physics / ramp (r_part.c).
    * @param {number} dt
    */
   update(dt) {
     this._time += dt;
-    const grav = dt * 800 * 0.05;
+    const frametime = dt;
+    const time1 = frametime * 5;
+    const time2 = frametime * 10;
+    const time3 = frametime * 15;
+    const grav = frametime * 800 * 0.05;
+    const dvel = 4 * frametime;
     for (let i = 0; i < MAX_PARTICLES; i++) {
       const p = this._particles[i];
       if (!p.active) continue;
@@ -228,20 +242,32 @@ export class ParticleSystem {
         this._free.push(i);
         continue;
       }
-      p.org[0] += p.vel[0] * dt;
-      p.org[1] += p.vel[1] * dt;
-      p.org[2] += p.vel[2] * dt;
+      p.org[0] += p.vel[0] * frametime;
+      p.org[1] += p.vel[1] * frametime;
+      p.org[2] += p.vel[2] * frametime;
+
       if (p.type === PT_SLOWGRAV || p.type === PT_GRAV) {
         p.vel[2] -= grav;
+      } else if (p.type === PT_FIRE) {
+        p.ramp += time1;
+        if (p.ramp >= 6) p.die = -1;
+        else p.color = RAMP3[p.ramp | 0] ?? RAMP3[5];
+        p.vel[2] += grav;
       } else if (p.type === PT_EXPLODE) {
-        p.vel[0] += p.vel[0] * dt * 4;
-        p.vel[1] += p.vel[1] * dt * 4;
-        p.vel[2] += p.vel[2] * dt * 4;
+        p.ramp += time2;
+        if (p.ramp >= 8) p.die = -1;
+        else p.color = RAMP1[p.ramp | 0] ?? RAMP1[7];
+        p.vel[0] += p.vel[0] * dvel;
+        p.vel[1] += p.vel[1] * dvel;
+        p.vel[2] += p.vel[2] * dvel;
         p.vel[2] -= grav;
       } else if (p.type === PT_EXPLODE2) {
-        p.vel[0] -= p.vel[0] * dt * 4;
-        p.vel[1] -= p.vel[1] * dt * 4;
-        p.vel[2] -= p.vel[2] * dt * 4;
+        p.ramp += time3;
+        if (p.ramp >= 8) p.die = -1;
+        else p.color = RAMP2[p.ramp | 0] ?? RAMP2[7];
+        p.vel[0] -= p.vel[0] * dvel;
+        p.vel[1] -= p.vel[1] * dvel;
+        p.vel[2] -= p.vel[2] * dvel;
         p.vel[2] -= grav;
       }
     }

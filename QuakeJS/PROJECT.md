@@ -53,7 +53,7 @@ If you are picking up this project with no chat history:
 5. Respect **§2–3** (SOLID + layers) before editing.
 6. After completing work, update **§12**, **§7**, and **§15 Changelog** in this file. Leave `README.md` alone unless the change is drastic for end users.
 
-**Current maturity (2026-07-26):** id1 SP through Phase 8; Phase 9 MVP (WS relay); Phase 10 started — entity draw from client state.
+**Current maturity (2026-07-26):** id1 SP through Phase 8; Phase 9 MVP (WS relay); Phase 10 — client draw, binds, vanilla `quake.rc` / startdemos.
 
 ### Remaining tasks (priority order)
 
@@ -72,7 +72,7 @@ Use **§13** for file-level detail. Summary:
 | **P3** | Sound (DMA-style mix → Web Audio) | Partial — SFX + spatialize + CD stub |
 | **P4** | Saves, demos, console polish | Done — save/load + demos + config.cfg |
 | **P5** | QuakeWorld / multiplayer | Partial — WS relay + listen/connect; not full QW |
-| **P6** | Client fidelity (Phase 10) | Partial — client entity draw + key binds; brush-from-net / CD open |
+| **P6** | Client fidelity (Phase 10) | Partial — client draw, binds, startdemos; brush-from-net / CD open |
 
 ---
 
@@ -332,9 +332,9 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started
 - [x] CD / music track stubs (optional HTMLAudio or silent)
 
 ### Phase 8 — Persistence & demos
-- [x] Save / load (`Host_Savegame` / `Host_Loadgame` — Quake text save format via localStorage)
-- [x] Demo record / playback (`cl_demo.c` subset — record frames; playdemo freezes sim)
-- [x] Config / `autoexec.cfg` / `config.cfg` in `localStorage`
+- [x] `config.cfg` / `autoexec.cfg` (localStorage; `quake.rc` exec on Host.init)
+- [x] Save / load Quake `.sav` text format
+- [x] Demo record / playdemo (`.dem`); PAK demos + `startdemos` loop
 
 ### Phase 9 — Multiplayer (opt-in; does not alter SP loopback path)
 - [x] NetQuake-style datagrams over WebSocket via `scripts/ws-relay.mjs` (`listen` / `connect` / `disconnect`)
@@ -345,6 +345,7 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started
 - [x] Draw alias/sprite entities from `ClientWorld` (CL_RelinkEntities subset; server lists as pre-signon fallback)
 - [x] View weapon from `svc_clientdata` weapon modelindex
 - [x] Key binds (`bind` / `unbind` / `bindlist` / config.cfg) instead of hard-coded WASD
+- [x] Vanilla attract demos (`quake.rc` → `startdemos demo1 demo2 demo3`)
 - [ ] Brush entities from client state (doors/plats) when remote
 - [ ] CD / music beyond stub; fuller ambient mix
 
@@ -358,7 +359,7 @@ Last audited: **2026-07-25** against `Quake-master/WinQuake`. Re-audit after maj
 
 ```
 Host / frame         ███████░░░  ~70%   Host_Init/Shutdown; protocol move + clientdata flush
-Filesystem (PAK)     █████████░  ~90%   pak0+pak1; file-picker fallback when fetch fails
+Filesystem (PAK)     ██████████  ~95%   pak1-first search; registered via gfx/pop.lmp; picker fallback
 Models (BSP/MDL/SPR) ████████░░  ~80%   BSP + alias MDL + SPR
 WebGPU render        ██████████  ~95%   world+brush+alias+sprites+lightstyles+dlights+view weapon+particles+frustum
 Server / world       ███████░░░  ~70%   hull walk + pushers + brush clip + walkmove
@@ -366,7 +367,7 @@ QuakeC VM            ███████░░░  ~65%   exec+edicts+builtins
 Client / protocol    ███████░░░  ~70%   loopback + clientdata + baselines + entity updates + clc_move
 UI / console/menu    █████████░  ~90%   sbar + conback console + menu + loading/intermission + centerprint
 Audio                █████░░░░░  ~50%   Web Audio SFX + spatialize + CD stub
-Saves / demos        ███████░░░  ~70%   Quake .sav text + .dem record/play via localStorage
+Saves / demos        ████████░░  ~80%   .sav + PAK demos + startdemos / quake.rc
 Net (loopback)       ███████░░░  ~70%   NetLoop + SizeBuf + per-frame datagram
 Net (non-loopback)   ████░░░░░░  ~40%   WebSocketNet + ws-relay; fan-out; no multi-slot SV yet
 ```
@@ -562,6 +563,7 @@ User supplies a legally obtained Quake `id1` directory (at least `pak0.pak`). Fi
 | 2026-07-26 | **Phase 10 client draw:** alias/sprite lists from `ClientWorld` + model precache; `msgtime` cull; view weapon from clientdata; server fallback pre-signon |
 | 2026-07-26 | **Phase 10 key binds:** `KeyBindings` + `bind`/`unbind`/`bindlist`; defaults (+forward/…/impulse); written into `config.cfg` |
 | 2026-07-26 | **Weapons via QuakeC:** removed JS shotgun stub; client `RunThink` for axe/nail/lightning anims; FLYMISSILE/BOUNCE toss + entity clip; `give all` / `impulse` |
+| 2026-07-26 | **Demo polish:** CL_RelinkEntities lerp + viewangles; fix `_smoothZ` on elevators; client brush list for plats; explosion particle ramps (r_part.c) |
 
 ---
 

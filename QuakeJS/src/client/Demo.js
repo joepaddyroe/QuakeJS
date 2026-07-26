@@ -1,6 +1,6 @@
 /**
  * Demo record / playback (cl_demo.c subset) — Quake .dem message stream.
- * Stored in localStorage as base64; also supports download Blob.
+ * Playback prefers filesystem (PAK demo1–3); record still uses localStorage.
  */
 
 import { ensureExt, readConfig, writeConfig } from '../app/ConfigIO.js';
@@ -41,7 +41,6 @@ export class DemoRecorder {
   start(name, cdtrack = -1) {
     this.name = ensureExt(name, '.dem');
     this._chunks = [];
-    // ASCII track header
     const hdr = `${cdtrack | 0}\n`;
     for (let i = 0; i < hdr.length; i++) this._chunks.push(hdr.charCodeAt(i));
     this.recording = true;
@@ -88,20 +87,38 @@ export class DemoPlayer {
   }
 
   /**
+   * Open a .dem from PAK / filesystem, falling back to localStorage recordings.
    * @param {string} name
+   * @param {import('../fs/FileSystem.js').FileSystem} [fs]
    */
-  open(name) {
+  open(name, fs) {
     const file = ensureExt(name, '.dem');
-    const b64 = readConfig(file);
-    if (!b64) throw new Error(`couldn't open ${file}`);
-    this._data = fromBase64(b64);
+    /** @type {Uint8Array|null} */
+    let data = null;
+
+    if (fs) {
+      const candidates = [file, file.toLowerCase(), name, `${name}.dem`];
+      for (const c of candidates) {
+        if (fs.has(c)) {
+          data = fs.load(c);
+          break;
+        }
+      }
+    }
+    if (!data) {
+      const b64 = readConfig(file);
+      if (b64) data = fromBase64(b64);
+    }
+    if (!data) throw new Error(`couldn't open ${file}`);
+
+    this._data = data;
     this._pos = 0;
     this.name = file;
-    // Read ASCII track line
     let line = '';
     while (this._pos < this._data.length) {
       const c = this._data[this._pos++];
       if (c === 10) break;
+      if (c === 13) continue;
       line += String.fromCharCode(c);
     }
     this.cdtrack = parseInt(line, 10);

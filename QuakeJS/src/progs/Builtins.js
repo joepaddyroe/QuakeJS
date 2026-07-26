@@ -716,11 +716,14 @@ export function createBuiltins(ctx) {
     RETURN_VECTOR(G_VECTOR(ofs.v_forward));
   }; // aim stub
   builtins[45] = () => {
-    // cvar(name) — enough for changelevel / registered checks
+    // cvar(name)
     const name = G_STRING(PARM(0));
-    if (name === 'registered') RETURN_FLOAT(1);
+    if (name === 'registered') {
+      RETURN_FLOAT(ctx.server?.fs?.registered ? 1 : 0);
+      return;
+    }
     RETURN_FLOAT(0);
-  };
+  }; // cvar
   builtins[46] = () => {}; // localcmd
   builtins[47] = () => {
     let e = G_INT(PARM(0)) + 1;

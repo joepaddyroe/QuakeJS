@@ -911,7 +911,8 @@ export class Server {
   }
 
   /**
-   * SV_WriteEntitiesToClient — loopback: all ents with modelindex (no PVS).
+   * SV_WriteEntitiesToClient — loopback: all visible ents (no PVS).
+   * Vanilla: skip if !modelindex || !pr_strings[ent->v.model] (pickup sets model="").
    * @param {number} clent
    * @param {SizeBuf} msg
    */
@@ -925,9 +926,11 @@ export class Server {
     for (let e = 1; e < edicts.numEdicts; e++) {
       if (edicts.free[e]) continue;
       const modelindex = edicts.getFloat(e, f.modelindex) | 0;
-      if (e !== clent && !modelindex) continue;
+      const model = progs.stringAt(edicts.getInt(e, f.model));
+      // Pickup / hide: QC sets model = string_null but often leaves modelindex
+      if (e !== clent && (!modelindex || !model)) continue;
       // Local FP: skip drawing player body (model cleared); still allow updates if index set
-      if (e === clent && !modelindex) continue;
+      if (e === clent && (!modelindex || !model)) continue;
 
       let base = this.baselines.get(e);
       if (!base) {
@@ -1964,8 +1967,8 @@ export class Server {
         continue;
       }
       const solid = edicts.getFloat(e, f.solid) | 0;
-      // Skip pure triggers / removed visuals
-      if (solid === SOLID_NOT && !(edicts.getFloat(e, f.modelindex) > 0)) continue;
+      // Pickup sets solid=NOT and model=""; ignore stale modelindex
+      if (solid === SOLID_NOT && !model) continue;
       const o = edicts.getVec(e, f.origin);
       const ang = edicts.getVec(e, f.angles);
       const frame = edicts.getFloat(e, f.frame) | 0;

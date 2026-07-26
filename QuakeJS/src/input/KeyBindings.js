@@ -16,6 +16,14 @@ const KEY_NAME_TO_CODE = {
   alt: 'AltLeft',
   ctrl: 'ControlLeft',
   shift: 'ShiftLeft',
+  del: 'Delete',
+  delete: 'Delete',
+  ins: 'Insert',
+  insert: 'Insert',
+  home: 'Home',
+  end: 'End',
+  pgup: 'PageUp',
+  pgdn: 'PageDown',
   f1: 'F1',
   f2: 'F2',
   f3: 'F3',
@@ -35,6 +43,27 @@ const KEY_NAME_TO_CODE = {
   mwheeldown: 'MouseWheelDown',
   pause: 'Pause',
   semicolon: 'Semicolon',
+  comma: 'Comma',
+  period: 'Period',
+  slash: 'Slash',
+  backslash: 'Backslash',
+  tilde: 'Backquote',
+  quote: 'Quote',
+  equals: 'Equal',
+  minus: 'Minus',
+  plus: 'Equal',
+  // single-char aliases used in default.cfg
+  ',': 'Comma',
+  '.': 'Period',
+  '/': 'Slash',
+  '\\': 'Backslash',
+  '`': 'Backquote',
+  '~': 'Backquote',
+  '-': 'Minus',
+  '=': 'Equal',
+  '+': 'Equal',
+  '[': 'BracketLeft',
+  ']': 'BracketRight',
 };
 
 /** @type {Record<string, string>} code → Quake name for config write */
@@ -216,7 +245,8 @@ export class KeyBindings {
    */
   _codeDown(code, kb, pointer) {
     if (code === 'Mouse1') return !!(pointer && pointer.attack);
-    if (code === 'Mouse2' || code === 'Mouse3') return false;
+    if (code === 'Mouse2') return !!(pointer && pointer.forward);
+    if (code === 'Mouse3') return !!(pointer && pointer.mlook);
     return kb.isDown(code);
   }
 }
