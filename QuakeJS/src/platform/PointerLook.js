@@ -1,5 +1,8 @@
 /**
  * Pointer-lock mouse look. Accumulates pitch/yaw in **degrees** (Quake angles).
+ *
+ * Note: while locked, the browser consumes Escape to exit lock and often does not
+ * deliver a keydown — use `onUserUnlock` to treat that as “open menu”.
  */
 export class PointerLook {
   /**
@@ -12,6 +15,15 @@ export class PointerLook {
     /** Degrees per pixel */
     this.sensitivity = 0.12;
     this._locked = false;
+    /** When true, canvas click will not request pointer lock (demos / UI) */
+    this.suppressLock = false;
+    /** Set by exitLock — unlock was intentional, not user Esc */
+    this._exitRequested = false;
+    /**
+     * Fired when the user leaves pointer lock (typically Esc) without exitLock().
+     * @type {(() => void)|null}
+     */
+    this.onUserUnlock = null;
     /** Fire / attack (QC button0) */
     this.attack = false;
     /** Mouse2 bound to +forward in default.cfg */
@@ -20,12 +32,21 @@ export class PointerLook {
     this.mlook = false;
 
     this._onClick = () => {
-      if (!this._locked) {
-        this._canvas.requestPointerLock?.();
-      }
+      if (this.suppressLock || this._locked) return;
+      this._canvas.requestPointerLock?.();
     };
     this._onLockChange = () => {
-      this._locked = document.pointerLockElement === this._canvas;
+      const nowLocked = document.pointerLockElement === this._canvas;
+      const wasLocked = this._locked;
+      this._locked = nowLocked;
+      if (wasLocked && !nowLocked) {
+        const intentional = this._exitRequested;
+        this._exitRequested = false;
+        this.attack = false;
+        this.forward = false;
+        this.mlook = false;
+        if (!intentional) this.onUserUnlock?.();
+      }
     };
     this._onMouseMove = (e) => {
       if (!this._locked) return;
@@ -51,9 +72,10 @@ export class PointerLook {
     return this._locked;
   }
 
-  /** Release pointer lock (e.g. when opening console). */
+  /** Release pointer lock (e.g. when opening console / menu). */
   exitLock() {
     if (document.pointerLockElement === this._canvas) {
+      this._exitRequested = true;
       document.exitPointerLock?.();
     }
     this.attack = false;

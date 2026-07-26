@@ -178,6 +178,12 @@ export class Host {
     };
     window.addEventListener('keydown', this._onKeyDown, true);
 
+    // Esc while pointer-locked is eaten by the browser — open menu on unlock
+    this._pointer.onUserUnlock = () => {
+      if (this.con.isOpen) return;
+      if (this._menu && !this._menu.isOpen) this.openMenu();
+    };
+
     if (this._sound && this._canvas) {
       const unlock = () => {
         void this._sound.unlock();
@@ -900,6 +906,10 @@ export class Host {
     const menuOpen = !!(this._menu && this._menu.isOpen);
     const uiBlocking = consoleOpen || menuOpen;
     const demoPlaying = this.demoPlayer.playing;
+    // Demos drive the camera; skip pointer lock so Esc reaches the menu handler
+    this._pointer.suppressLock =
+      demoPlaying || menuOpen || consoleOpen;
+    if (demoPlaying && this._pointer.locked) this._pointer.exitLock();
 
     if (demoPlaying) {
       if (!uiBlocking) this._runDemoPlayback(dt);
