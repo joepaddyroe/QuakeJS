@@ -205,7 +205,7 @@ function parseClientdata(msg, bits, world) {
 
   world.stats.weaponframe = bits & SU.WEAPONFRAME ? msg.readByte() : 0;
   world.stats.armor = bits & SU.ARMOR ? msg.readByte() : 0;
-  if (bits & SU.WEAPON) msg.readByte(); // weapon modelindex
+  world.stats.weaponmodel = bits & SU.WEAPON ? msg.readByte() : 0;
   world.stats.health = msg.readShort();
   world.stats.ammo = msg.readByte();
   world.stats.shells = msg.readByte();
@@ -264,6 +264,7 @@ function parseEntityUpdate(msg, bits, world) {
   ent.angles[1] = bits & U.ANGLE2 ? msg.readAngle() : b.angles[1];
   ent.origin[2] = bits & U.ORIGIN3 ? msg.readCoord() : b.origin[2];
   ent.angles[2] = bits & U.ANGLE3 ? msg.readAngle() : b.angles[2];
+  if (world) ent.msgtime = world.mtime;
 }
 
 /**

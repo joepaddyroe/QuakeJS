@@ -36,6 +36,8 @@ export class WebGpuRenderer {
     this.collision = null;
     /** @type {Server|null} */
     this.server = null;
+    /** @type {import('../client/ClientWorld.js').ClientWorld|null} */
+    this.clientWorld = null;
     /** @type {'demo'|'world'} */
     this.mode = 'demo';
     this.mapName = '';
@@ -178,8 +180,7 @@ export class WebGpuRenderer {
       if (this.server) this.server.clientTime = this._time;
       this._particles.update(dt);
       const brushes = this.server ? this.server.getBrushDrawList() : [];
-      const aliases = this.server ? this.server.getAliasDrawList() : [];
-      const sprites = this.server ? this.server.getSpriteDrawList() : [];
+      const { aliases, sprites } = this._entityDrawLists();
       const cam = this.player.lookAtArgs();
       this._worldRend.draw(
         encoder,
@@ -218,7 +219,7 @@ export class WebGpuRenderer {
           width,
           height,
         );
-        const gun = this.server ? this.server.getViewWeapon(this.player) : null;
+        const gun = this._viewWeapon(this.player);
         this.viewWeapon = gun ? gun.model : '';
         this._aliasRend.drawViewModel(
           encoder,
@@ -238,6 +239,58 @@ export class WebGpuRenderer {
       this._demo.draw(encoder, colorView, this._demoCamera.lookAtArgs(), width, height);
     }
     device.queue.submit([encoder.finish()]);
+  }
+
+  /**
+   * Prefer client entity state (protocol) when svc_time has been received;
+   * otherwise fall back to server-side lists (pre-connect / first frames).
+   * @returns {{
+   *   aliases: { model: string, origin: Float32Array, yaw: number, frame: number }[],
+   *   sprites: { model: string, origin: Float32Array, angles: Float32Array, frame: number }[],
+   * }}
+   */
+  _entityDrawLists() {
+    const precache = this.server?.modelPrecache;
+    const cw = this.clientWorld;
+    if (cw && precache && cw.mtime > 0) {
+      return {
+        aliases: cw.getAliasDrawList(precache, this._time),
+        sprites: cw.getSpriteDrawList(precache),
+      };
+    }
+    return {
+      aliases: this.server ? this.server.getAliasDrawList() : [],
+      sprites: this.server ? this.server.getSpriteDrawList() : [],
+    };
+  }
+
+  /**
+   * View weapon from clientdata weapon modelindex when available.
+   * @param {import('../server/PlayerMove.js').PlayerMove} player
+   * @returns {{ model: string, origin: Float32Array, pitch: number, yaw: number, frame: number } | null}
+   */
+  _viewWeapon(player) {
+    const cw = this.clientWorld;
+    const precache = this.server?.modelPrecache;
+    if (cw && precache && cw.mtime > 0) {
+      if ((cw.stats.health | 0) <= 0) return null;
+      const mi = cw.stats.weaponmodel | 0;
+      const model = mi > 0 && mi < precache.length ? precache[mi] : '';
+      if (model && model.endsWith('.mdl')) {
+        return {
+          model,
+          origin: new Float32Array([
+            player.origin[0],
+            player.origin[1],
+            player._smoothZ + player.viewOfsZ + 2,
+          ]),
+          pitch: player.pitch,
+          yaw: player.yaw,
+          frame: cw.stats.weaponframe | 0,
+        };
+      }
+    }
+    return this.server ? this.server.getViewWeapon(player) : null;
   }
 
   destroy() {

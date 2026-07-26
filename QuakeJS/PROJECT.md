@@ -53,7 +53,7 @@ If you are picking up this project with no chat history:
 5. Respect **§2–3** (SOLID + layers) before editing.
 6. After completing work, update **§12**, **§7**, and **§15 Changelog** in this file. Leave `README.md` alone unless the change is drastic for end users.
 
-**Current maturity (2026-07-26):** id1 SP through Phase 8; Phase 9 MVP — WebSocket relay + `listen`/`connect` (SP loopback unchanged). Full QW protocol still open.
+**Current maturity (2026-07-26):** id1 SP through Phase 8; Phase 9 MVP (WS relay); Phase 10 started — entity draw from client state.
 
 ### Remaining tasks (priority order)
 
@@ -72,6 +72,7 @@ Use **§13** for file-level detail. Summary:
 | **P3** | Sound (DMA-style mix → Web Audio) | Partial — SFX + spatialize + CD stub |
 | **P4** | Saves, demos, console polish | Done — save/load + demos + config.cfg |
 | **P5** | QuakeWorld / multiplayer | Partial — WS relay + listen/connect; not full QW |
+| **P6** | Client fidelity (Phase 10) | Partial — client entity draw + key binds; brush-from-net / CD open |
 
 ---
 
@@ -340,6 +341,13 @@ Legend: `[x]` done · `[~]` partial · `[ ]` not started
 - [ ] Full QuakeWorld protocol / multi-slot clients / WebRTC (separate milestone)
 - [x] Do not require QW for single-player id1 completion
 
+### Phase 10 — Client fidelity polish
+- [x] Draw alias/sprite entities from `ClientWorld` (CL_RelinkEntities subset; server lists as pre-signon fallback)
+- [x] View weapon from `svc_clientdata` weapon modelindex
+- [x] Key binds (`bind` / `unbind` / `bindlist` / config.cfg) instead of hard-coded WASD
+- [ ] Brush entities from client state (doors/plats) when remote
+- [ ] CD / music beyond stub; fuller ambient mix
+
 ---
 
 ## 12. Port status vs vanilla Quake
@@ -381,7 +389,7 @@ Net (non-loopback)   ████░░░░░░  ~40%   WebSocketNet + ws-re
 #### Rendering
 - Sky/turb are WebGPU approximations of `gl_warp.c` (no subdivided polys)
 - `DemoRoomRenderer` retained as load-failure fallback
-- Entity draw still primarily from server `getAliasDrawList` (client entity state parsed but not yet the sole draw source)
+- Alias/sprite draw prefers `ClientWorld` after `svc_time`; brush ents still from server `getBrushDrawList`
 
 ### 12.4 Missing entirely (initial backlog)
 
@@ -416,7 +424,7 @@ Use this when choosing what to port next. Goal: **playable Quake 1 single-player
 | P2 | **Draw brush ents + entity clip** | Done | `WorldRenderer` + `World.brushes` · `SV_ClipMoveToEntity` |
 | P2 | **Changelevel / map load** | Done (no intermission UI) | `Host.changeMap`, builtin #70 · `host_cmd.c` |
 | P2 | **Loopback net + SV/CL connect** | Partial — SizeBuf + NetLoop + ClientParse | `net/NetLoop.js`, `client/Client.js` · `net_loop.c`, `cl_parse.c` |
-| P3 | **Alias + view weapon** | Partial — FP shotgun + fire frames | `AliasRenderer.js`, `Server.playerAttack` · `gl_mesh.c`, `view.c` |
+| P3 | **Alias + view weapon** | Done — all weapons via QC `W_Attack` + client thinks | `AliasRenderer.js`, `Server.runClientPostThink` · `weapons.qc` |
 | P3 | **Status bar + menu + console** | Done — sbar + menu + conback/conchars console | `ui/*` · `sbar.c`, `console.c`, `menu.c`, `draw.c` |
 | P3 | **Sound** | Partial — SFX + spatialize | `audio/SoundSystem.js` · `snd_dma.c` |
 | P4 | **Particles, temp ents, sky polish** | Partial — particles + sprites + lightstyles + dlights | `ParticleSystem.js`, `SpriteRenderer.js`, `LightStyles.js`, `DynamicLights.js` |
@@ -452,6 +460,7 @@ Use this when choosing what to port next. Goal: **playable Quake 1 single-player
 | Sound | `audio/SoundSystem.js` · `snd_dma.c`, `snd_mem.c` |
 | Menus | `ui/Menu.js`, `ui/DrawPics.js` · `menu.c` |
 | Console / cvars | `ui/Console.js`, `core/Cvar.js`, `core/Cmd.js`, `ui/HostCmds.js` · `console.c`, `cvar.c`, `cmd.c` |
+| Key binds | `input/KeyBindings.js` · `keys.c` |
 | Constants / limits | `core/` · `quakedef.h`, `protocol.h` |
 
 ### Host frame order (reference)
@@ -550,6 +559,9 @@ User supplies a legally obtained Quake `id1` directory (at least `pak0.pak`). Fi
 | 2026-07-26 | **Phase 5 client slice:** usercmd→PlayerMove; `svc_clientdata`/`spawnbaseline`/fast entity updates; punch+roll; `walkmove`/`movetogoal`/`checkclient`; PlayerPostThink |
 | 2026-07-26 | **Phase 8 persistence:** `config.cfg`/`autoexec.cfg` localStorage; Quake `.sav` save/load; `.dem` record + playdemo |
 | 2026-07-26 | **Phase 9 MP MVP:** `WebSocketNet` + `scripts/ws-relay.mjs`; `listen`/`connect`/`disconnect`; server fan-out; SP loopback unchanged |
+| 2026-07-26 | **Phase 10 client draw:** alias/sprite lists from `ClientWorld` + model precache; `msgtime` cull; view weapon from clientdata; server fallback pre-signon |
+| 2026-07-26 | **Phase 10 key binds:** `KeyBindings` + `bind`/`unbind`/`bindlist`; defaults (+forward/…/impulse); written into `config.cfg` |
+| 2026-07-26 | **Weapons via QuakeC:** removed JS shotgun stub; client `RunThink` for axe/nail/lightning anims; FLYMISSILE/BOUNCE toss + entity clip; `give all` / `impulse` |
 
 ---
 

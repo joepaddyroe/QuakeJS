@@ -76,6 +76,7 @@ export class Client {
         world: this.world,
         time: (t) => {
           this.mtime = t;
+          this.world.mtime = t;
           this.hooks.time?.(t);
         },
       });

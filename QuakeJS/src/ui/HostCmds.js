@@ -4,6 +4,18 @@
 
 import { Cvar } from '../core/Cvar.js';
 import { listStored } from '../app/ConfigIO.js';
+import { keyNameToCode } from '../input/KeyBindings.js';
+
+/**
+ * @param {import('../input/KeyBindings.js').KeyBindings} keys
+ * @param {string} keyName
+ * @returns {string|undefined}
+ */
+function lookupBind(keys, keyName) {
+  const code = keyNameToCode(keyName);
+  if (!code) return undefined;
+  return keys.map.has(code) ? keys.map.get(code) : undefined;
+}
 
 /**
  * @param {object} deps
@@ -117,6 +129,80 @@ export function registerHostCommands({ cmd, cvars, con, host, sound }) {
   cmd.add('writeconfig', () => {
     host.writeConfiguration();
     print('Wrote config.cfg\n');
+  });
+
+  cmd.add('impulse', (args) => {
+    const n = parseInt(args[1], 10);
+    if (!Number.isFinite(n)) {
+      print('impulse <num>\n');
+      return;
+    }
+    host._consoleImpulse = n | 0;
+  });
+
+  cmd.add('give', (args) => {
+    const server = host._renderer.server;
+    if (!server) {
+      print('Not playing\n');
+      return;
+    }
+    const what = (args[1] || '').toLowerCase();
+    if (what !== 'all') {
+      print('give all — all weapons + ammo\n');
+      return;
+    }
+    const f = server.progs.f;
+    const edicts = server.edicts;
+    const ent = 1;
+    if (edicts.free[ent]) return;
+    // IT_SHOTGUN…IT_LIGHTNING|IT_AXE|IT_* ammo
+    const IT =
+      1 | 2 | 4 | 8 | 16 | 32 | 64 | 4096 | 256 | 512 | 1024 | 2048;
+    edicts.setFloat(ent, f.items, (edicts.getFloat(ent, f.items) | 0) | IT);
+    edicts.setFloat(ent, f.ammo_shells, 100);
+    edicts.setFloat(ent, f.ammo_nails, 200);
+    edicts.setFloat(ent, f.ammo_rockets, 100);
+    edicts.setFloat(ent, f.ammo_cells, 100);
+    print('all weapons and ammo\n');
+  });
+
+  cmd.add('bind', (args) => {
+    if (args.length < 2) {
+      print('bind <key> [command] : attach a command to a key\n');
+      return;
+    }
+    const key = args[1];
+    if (args.length === 2) {
+      if (!keyNameToCode(key)) {
+        print(`"${key}" isn't a valid key\n`);
+        return;
+      }
+      const bound = lookupBind(host.keys, key);
+      if (bound != null) print(`"${key}" = "${bound}"\n`);
+      else print(`"${key}" is not bound\n`);
+      return;
+    }
+    const command = args.slice(2).join(' ');
+    if (!host.keys.bind(key, command)) {
+      print(`"${key}" isn't a valid key\n`);
+    }
+  });
+
+  cmd.add('unbind', (args) => {
+    const key = args[1];
+    if (!key) {
+      print('unbind <key> : remove commands from a key\n');
+      return;
+    }
+    if (!host.keys.unbind(key)) print(`"${key}" isn't a valid key\n`);
+  });
+
+  cmd.add('unbindall', () => {
+    host.keys.map.clear();
+  });
+
+  cmd.add('bindlist', () => {
+    for (const line of host.keys.listLines()) print(`${line}\n`);
   });
 
   cmd.add('save', (args) => {

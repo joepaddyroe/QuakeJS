@@ -19,6 +19,7 @@ import { saveGame, loadSaveHeader, applySaveToServer } from '../server/SaveGame.
 import { DemoRecorder, DemoPlayer } from '../client/Demo.js';
 import { SizeBuf } from '../net/SizeBuf.js';
 import { parseServerMessage } from '../client/ClientParse.js';
+import { KeyBindings } from '../input/KeyBindings.js';
 
 export class Host {
   /**
@@ -64,9 +65,10 @@ export class Host {
     this._fpsAccum = 0;
     this._fpsFrames = 0;
     this._fps = 0;
-    this._noclipWasDown = false;
-    this._attackWasDown = false;
     this._mapLoading = false;
+    this.keys = new KeyBindings();
+    /** Console `impulse N` pending for next usercmd */
+    this._consoleImpulse = 0;
     this._initialized = false;
     this._shuttingDown = false;
     this._pendingSave = null;
@@ -115,6 +117,7 @@ export class Host {
         },
       },
     });
+    this._renderer.clientWorld = this.client.world;
 
     registerHostCommands({
       cmd: this.cmd,
@@ -206,8 +209,69 @@ export class Host {
    * Host_WriteConfiguration
    */
   writeConfiguration() {
-    const body = this.cvars.writeArchived();
+    const body = this.cvars.writeArchived() + this.keys.writeConfig();
     writeConfig('config.cfg', body);
+  }
+
+  /**
+   * Sample binds into move / buttons / impulse (and fire one-shot cmds).
+   * @param {boolean} uiBlocking
+   * @returns {{
+   *   forwardmove: number,
+   *   sidemove: number,
+   *   upmove: number,
+   *   attack: boolean,
+   *   jump: boolean,
+   *   down: boolean,
+   *   impulse: number,
+   * }}
+   */
+  _sampleMove(uiBlocking) {
+    const kb = this._keyboard;
+    const ptr = this._pointer;
+    if (!uiBlocking) {
+      this.keys.sample(kb, ptr, (cmd) => {
+        this.cmd.addText(cmd.endsWith('\n') ? cmd : `${cmd}\n`);
+        this.cmd.executeBuffer(
+          (args) => this._handleCvarArgs(args),
+          (msg) => this.con.print(msg),
+        );
+      });
+    }
+    if (uiBlocking) {
+      return {
+        forwardmove: 0,
+        sidemove: 0,
+        upmove: 0,
+        attack: false,
+        jump: false,
+        down: false,
+        impulse: 0,
+      };
+    }
+    let forwardmove = 0;
+    let sidemove = 0;
+    let upmove = 0;
+    if (this.keys.isDown(kb, ptr, 'forward')) forwardmove += 400;
+    if (this.keys.isDown(kb, ptr, 'back')) forwardmove -= 400;
+    if (this.keys.isDown(kb, ptr, 'moveleft')) sidemove -= 350;
+    if (this.keys.isDown(kb, ptr, 'moveright')) sidemove += 350;
+    const jump = this.keys.isDown(kb, ptr, 'jump');
+    const down = this.keys.isDown(kb, ptr, 'movedown');
+    if (jump) upmove += 200;
+    if (down) upmove -= 200;
+    const impulse =
+      (this.keys.pendingImpulse | 0) || (this._consoleImpulse | 0);
+    this._consoleImpulse = 0;
+    return {
+      forwardmove,
+      sidemove,
+      upmove,
+      attack: this.keys.isDown(kb, ptr, 'attack'),
+      jump,
+      down,
+      impulse,
+    };
   }
 
   /**
@@ -282,6 +346,7 @@ export class Host {
       world: this.client.world,
       time: (t) => {
         this.client.mtime = t;
+        this.client.world.mtime = t;
       },
     });
   }
@@ -439,29 +504,16 @@ export class Host {
    */
   _frameRemoteClient(dt, width, height, uiBlocking) {
     const player = this._renderer.player;
-    const kb = this._keyboard;
     const worldMode = this._renderer.mode === 'world';
 
     if (worldMode && player && !uiBlocking) {
-      const jump = kb.isDown('Space');
-      const attack =
-        this._pointer.attack ||
-        kb.isDown('Mouse0') ||
-        kb.isDown('ControlLeft');
-      let forwardmove = 0;
-      let sidemove = 0;
-      let upmove = 0;
-      if (kb.isDown('KeyW') || kb.isDown('ArrowUp')) forwardmove += 400;
-      if (kb.isDown('KeyS') || kb.isDown('ArrowDown')) forwardmove -= 400;
-      if (kb.isDown('KeyA') || kb.isDown('ArrowLeft')) sidemove -= 350;
-      if (kb.isDown('KeyD') || kb.isDown('ArrowRight')) sidemove += 350;
-      if (jump) upmove += 200;
+      const mv = this._sampleMove(false);
       this.client.sendMove({
-        forwardmove,
-        sidemove,
-        upmove,
-        buttons: (attack ? 1 : 0) | (jump ? 2 : 0),
-        impulse: 0,
+        forwardmove: mv.forwardmove,
+        sidemove: mv.sidemove,
+        upmove: mv.upmove,
+        buttons: (mv.attack ? 1 : 0) | (mv.jump ? 2 : 0),
+        impulse: mv.impulse,
         angles: [this._pointer.pitch, this._pointer.yaw, 0],
       });
       player.setAngles(this._pointer.pitch, this._pointer.yaw);
@@ -660,52 +712,25 @@ export class Host {
     const sens = this.cvars.value('sensitivity');
     if (sens > 0) this._pointer.sensitivity = 0.04 * sens;
 
-    const nDown = !uiBlocking && kb.isDown('KeyN');
-    if (worldMode && player && nDown && !this._noclipWasDown) {
-      player.noclip = !player.noclip;
-    }
-    this._noclipWasDown = nDown;
-
     const intermission = !!(server && server.isIntermission());
+    const mv = this._sampleMove(uiBlocking || intermission);
+    const attack = mv.attack;
+    const jump = mv.jump;
 
     if (worldMode && player && !uiBlocking) {
       if (server && this._renderer.collision) {
         this._renderer.collision.brushes = server.getBrushDrawList();
       }
 
-      const attack =
-        this._pointer.attack ||
-        kb.isDown('ControlLeft') ||
-        kb.isDown('ControlRight');
-      const jump = kb.isDown('Space');
-      const attackPressed = attack && !this._attackWasDown;
-      this._attackWasDown = attack;
-
       // CL_SendMove → SV_ReadClientMessage (buttons/angles via loopback)
-      let forwardmove = 0;
-      let sidemove = 0;
-      let upmove = 0;
-      if (!intermission) {
-        if (kb.isDown('KeyW') || kb.isDown('ArrowUp')) forwardmove += 400;
-        if (kb.isDown('KeyS') || kb.isDown('ArrowDown')) forwardmove -= 400;
-        if (kb.isDown('KeyA') || kb.isDown('ArrowLeft')) sidemove -= 350;
-        if (kb.isDown('KeyD') || kb.isDown('ArrowRight')) sidemove += 350;
-        if (jump) upmove += 200;
-        if (
-          kb.isDown('ControlLeft') ||
-          kb.isDown('ControlRight') ||
-          kb.isDown('KeyC')
-        ) {
-          upmove -= 200;
-        }
-      }
+      const { forwardmove, sidemove, upmove, impulse } = mv;
       const buttons = (attack ? 1 : 0) | (jump ? 2 : 0);
       this.client.sendMove({
         forwardmove,
         sidemove,
         upmove,
         buttons,
-        impulse: 0,
+        impulse,
         angles: [this._pointer.pitch, this._pointer.yaw, 0],
       });
       if (server) server.readClientMessages();
@@ -744,10 +769,7 @@ export class Host {
           upmove: lc?.upmove ?? upmove,
           jump: !!(lc?.buttons & 2) || jump,
           up: jump,
-          down:
-            kb.isDown('ControlLeft') ||
-            kb.isDown('ControlRight') ||
-            kb.isDown('KeyC'),
+          down: mv.down,
         });
         this._pointer.yaw = player.yaw;
         this._pointer.pitch = player.pitch;
@@ -780,11 +802,6 @@ export class Host {
           });
           server.impactTouches(1, player.impactedEdicts);
           server.bumpOpenDoors(1, player.impactedEdicts);
-          if (attackPressed) {
-            const eye = player.eye();
-            server.playerAttack(1, eye, player.pitch, player.yaw);
-          }
-          server.tickWeaponAnim(1);
         }
         server.physics(frameDt, player);
         if (!intermission) {
@@ -805,6 +822,7 @@ export class Host {
             this._pointer.yaw = applied.yaw;
             this._pointer.pitch = applied.pitch;
           }
+          // W_WeaponFrame / ImpulseCommands / W_Attack (all weapons via QuakeC)
           server.runClientPostThink(1);
         }
       }
@@ -815,15 +833,12 @@ export class Host {
         (this._pointer.pitch * Math.PI) / 180,
       );
       cam.update(dt, {
-        forward: kb.isDown('KeyW') || kb.isDown('ArrowUp'),
-        back: kb.isDown('KeyS') || kb.isDown('ArrowDown'),
-        left: kb.isDown('KeyA') || kb.isDown('ArrowLeft'),
-        right: kb.isDown('KeyD') || kb.isDown('ArrowRight'),
-        up: kb.isDown('Space'),
-        down:
-          kb.isDown('ControlLeft') ||
-          kb.isDown('ControlRight') ||
-          kb.isDown('KeyC'),
+        forward: this.keys.isDown(kb, this._pointer, 'forward'),
+        back: this.keys.isDown(kb, this._pointer, 'back'),
+        left: this.keys.isDown(kb, this._pointer, 'moveleft'),
+        right: this.keys.isDown(kb, this._pointer, 'moveright'),
+        up: this.keys.isDown(kb, this._pointer, 'jump'),
+        down: this.keys.isDown(kb, this._pointer, 'movedown'),
       });
     } else if (worldMode && player && server) {
       const frameDt = Math.min(dt, 0.1);

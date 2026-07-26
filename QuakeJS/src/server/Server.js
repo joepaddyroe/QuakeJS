@@ -1209,9 +1209,9 @@ export class Server {
         case MOVETYPE_TOSS:
         case MOVETYPE_BOUNCE:
         case MOVETYPE_FLYMISSILE:
+        case MOVETYPE_FLY:
           this._physicsToss(e, frametime);
           break;
-        case MOVETYPE_FLY:
         case MOVETYPE_WALK:
         case MOVETYPE_NOCLIP:
           this._runThink(e, frametime);
@@ -1223,6 +1223,11 @@ export class Server {
           this._runThink(e, frametime);
           break;
       }
+    }
+
+    // SV_Physics_Client RunThink — weapon anims (player_shot*, nail*, axe*, light*)
+    if (!edicts.free[1] && MAX_CLIENTS >= 1) {
+      this._runThink(1, frametime);
     }
 
     this.time += frametime;
@@ -1531,6 +1536,7 @@ export class Server {
   }
 
   /**
+   * SV_Physics_Toss — toss / bounce / fly / flymissile (sv_phys.c).
    * @param {number} ent
    * @param {number} frametime
    */
@@ -1538,34 +1544,204 @@ export class Server {
     this._runThink(ent, frametime);
     if (this.edicts.free[ent]) return;
     const f = this.progs.f;
-    if ((this.edicts.getFloat(ent, f.flags) | 0) & FL_ONGROUND) return;
+    const edicts = this.edicts;
+    const movetype = edicts.getFloat(ent, f.movetype) | 0;
 
-    // Gravity
-    const vel = this.edicts.getVec(ent, f.velocity);
-    vel[2] -= 800 * frametime;
-    this.edicts.setVec(ent, f.velocity, vel);
+    if ((edicts.getFloat(ent, f.flags) | 0) & FL_ONGROUND) return;
 
-    const o = this.edicts.getVec(ent, f.origin);
+    // Gravity: not for FLY / FLYMISSILE
+    if (movetype !== MOVETYPE_FLY && movetype !== MOVETYPE_FLYMISSILE) {
+      const vel = edicts.getVec(ent, f.velocity);
+      vel[2] -= 800 * frametime;
+      edicts.setVec(ent, f.velocity, vel);
+    }
+
+    // avelocity → angles
+    const ang = edicts.getVec(ent, f.angles);
+    const avel = edicts.getVec(ent, f.avelocity);
+    ang[0] += avel[0] * frametime;
+    ang[1] += avel[1] * frametime;
+    ang[2] += avel[2] * frametime;
+    edicts.setVec(ent, f.angles, ang);
+
+    const vel = edicts.getVec(ent, f.velocity);
+    const o = edicts.getVec(ent, f.origin);
     const end = new Float32Array([
       o[0] + vel[0] * frametime,
       o[1] + vel[1] * frametime,
       o[2] + vel[2] * frametime,
     ]);
-    const mins = new Float32Array(this.edicts.getVec(ent, f.mins));
-    const maxs = new Float32Array(this.edicts.getVec(ent, f.maxs));
-    const tr = this.world.playerMove(o, end, mins, maxs);
-    this.edicts.setVec(ent, f.origin, tr.endpos);
-    this.edicts.linkAbs(ent);
-    if (tr.fraction < 1) {
-      if (tr.plane.normal[2] > 0.7) {
-        this.edicts.setFloat(
+    const mins = new Float32Array(edicts.getVec(ent, f.mins));
+    const maxs = new Float32Array(edicts.getVec(ent, f.maxs));
+
+    // World + brush clip
+    let tr = this.world.playerMove(o, end, mins, maxs);
+    // Entity AABB clip (monsters / player) — SV_ClipToLinks subset
+    tr = this._clipMoveToEntities(ent, o, end, mins, maxs, tr);
+
+    edicts.setVec(ent, f.origin, tr.endpos);
+    edicts.linkAbs(ent);
+
+    if (tr.fraction >= 1) {
+      this._touchSolidEntities(ent);
+      return;
+    }
+
+    // ClipVelocity
+    const backoff = movetype === MOVETYPE_BOUNCE ? 1.5 : 1;
+    const v = edicts.getVec(ent, f.velocity);
+    const n = tr.plane.normal;
+    const into = v[0] * n[0] + v[1] * n[1] + v[2] * n[2];
+    v[0] -= n[0] * into * backoff;
+    v[1] -= n[1] * into * backoff;
+    v[2] -= n[2] * into * backoff;
+    edicts.setVec(ent, f.velocity, v);
+
+    if (n[2] > 0.7) {
+      if (v[2] < 60 || movetype !== MOVETYPE_BOUNCE) {
+        edicts.setFloat(
           ent,
           f.flags,
-          (this.edicts.getFloat(ent, f.flags) | 0) | FL_ONGROUND,
+          (edicts.getFloat(ent, f.flags) | 0) | FL_ONGROUND,
         );
-        this.edicts.setVec(ent, f.velocity, [0, 0, 0]);
+        edicts.setInt(ent, f.groundentity, tr.ent | 0);
+        edicts.setVec(ent, f.velocity, [0, 0, 0]);
+        edicts.setVec(ent, f.avelocity, [0, 0, 0]);
       }
     }
+
+    this.impact(ent, tr.ent | 0);
+  }
+
+  /**
+   * Clip a move against SOLID_BBOX / SLIDEBOX / BSP-box entities (not world).
+   * @param {number} passedict
+   * @param {Float32Array} start
+   * @param {Float32Array} end
+   * @param {Float32Array} mins
+   * @param {Float32Array} maxs
+   * @param {import('./World.js').Trace} worldTrace
+   * @returns {import('./World.js').Trace}
+   */
+  _clipMoveToEntities(passedict, start, end, mins, maxs, worldTrace) {
+    const edicts = this.edicts;
+    const f = this.progs.f;
+    let best = worldTrace;
+    const owner = edicts.getInt(passedict, f.owner) | 0;
+
+    for (let e = 1; e < edicts.numEdicts; e++) {
+      if (e === passedict || edicts.free[e]) continue;
+      if (e === owner) continue;
+      const solid = edicts.getFloat(e, f.solid) | 0;
+      if (
+        solid === SOLID_NOT ||
+        solid === SOLID_TRIGGER ||
+        solid === SOLID_BSP
+      ) {
+        continue; // BSP brushes already in world.playerMove
+      }
+
+      const emin = edicts.getVec(e, f.absmin);
+      const emax = edicts.getVec(e, f.absmax);
+      // Expand by mover's size (point missiles: mins=maxs=0)
+      const bmin = [
+        emin[0] - maxs[0],
+        emin[1] - maxs[1],
+        emin[2] - maxs[2],
+      ];
+      const bmax = [
+        emax[0] - mins[0],
+        emax[1] - mins[1],
+        emax[2] - mins[2],
+      ];
+
+      const hit = this._clipBoxToBox(start, end, bmin, bmax);
+      if (!hit || hit.fraction >= best.fraction) continue;
+      best = {
+        allsolid: false,
+        startsolid: !!hit.startsolid,
+        inopen: best.inopen,
+        inwater: best.inwater,
+        fraction: hit.fraction,
+        endpos: hit.endpos,
+        plane: { normal: hit.normal, dist: 0 },
+        ent: e,
+      };
+    }
+    return best;
+  }
+
+  /**
+   * Ray vs AABB (expanded box already includes mover size).
+   * @param {Float32Array|number[]} start
+   * @param {Float32Array|number[]} end
+   * @param {number[]} bmin
+   * @param {number[]} bmax
+   * @returns {{ fraction: number, endpos: Float32Array, normal: Float32Array, startsolid: boolean } | null}
+   */
+  _clipBoxToBox(start, end, bmin, bmax) {
+    if (
+      start[0] >= bmin[0] &&
+      start[0] <= bmax[0] &&
+      start[1] >= bmin[1] &&
+      start[1] <= bmax[1] &&
+      start[2] >= bmin[2] &&
+      start[2] <= bmax[2]
+    ) {
+      return {
+        fraction: 0,
+        endpos: new Float32Array([start[0], start[1], start[2]]),
+        normal: new Float32Array([0, 0, 1]),
+        startsolid: true,
+      };
+    }
+
+    const dx = end[0] - start[0];
+    const dy = end[1] - start[1];
+    const dz = end[2] - start[2];
+    let tEnter = 0;
+    let tExit = 1;
+    const hitNormal = new Float32Array([0, 0, 1]);
+
+    for (let i = 0; i < 3; i++) {
+      const s = start[i];
+      const d = i === 0 ? dx : i === 1 ? dy : dz;
+      const min = bmin[i];
+      const max = bmax[i];
+      if (Math.abs(d) < 1e-8) {
+        if (s < min || s > max) return null;
+        continue;
+      }
+      const inv = 1 / d;
+      let tNear = (min - s) * inv;
+      let tFar = (max - s) * inv;
+      let nearSign = -1;
+      if (tNear > tFar) {
+        const tmp = tNear;
+        tNear = tFar;
+        tFar = tmp;
+        nearSign = 1;
+      }
+      if (tNear > tEnter) {
+        tEnter = tNear;
+        hitNormal[0] = hitNormal[1] = hitNormal[2] = 0;
+        hitNormal[i] = nearSign;
+      }
+      if (tFar < tExit) tExit = tFar;
+      if (tEnter > tExit) return null;
+    }
+
+    if (tEnter < 0 || tEnter > 1) return null;
+    return {
+      fraction: tEnter,
+      endpos: new Float32Array([
+        start[0] + dx * tEnter,
+        start[1] + dy * tEnter,
+        start[2] + dz * tEnter,
+      ]),
+      normal: hitNormal,
+      startsolid: false,
+    };
   }
 
   /**
@@ -1665,9 +1841,11 @@ export class Server {
     const ent = 1;
     if (edicts.free[ent]) return null;
     if ((edicts.getFloat(ent, f.health) | 0) <= 0) return null;
-    // Always resolve from .weapon (W_SetCurrentAmmo) — one view model, never axe+gun.
     const weapon = edicts.getFloat(ent, f.weapon) | 0;
-    const model = this._viewModelForWeapon(weapon || 1);
+    let model = this.progs.stringAt(edicts.getInt(ent, f.weaponmodel));
+    if (!model || !model.endsWith('.mdl')) {
+      model = this._viewModelForWeapon(weapon || 1);
+    }
     const origin = new Float32Array([
       player.origin[0],
       player.origin[1],
@@ -1951,61 +2129,19 @@ export class Server {
   }
 
   /**
-   * Advance view-weapon fire frames (player_shot1…6 → weaponframe 1–6).
+   * Advance view-weapon fire frames — deprecated; QC player_* thinks own weaponframe.
    * @param {number} [ent=1]
+   * @deprecated
    */
   tickWeaponAnim(ent = 1) {
-    const f = this.progs.f;
-    const edicts = this.edicts;
-    if (edicts.free[ent]) return;
-    let frame = edicts.getFloat(ent, f.weaponframe) | 0;
-    if (frame <= 0) return;
-    if (this.time < this._weaponAnimNext) return;
-    this._weaponAnimNext = this.time + 0.1;
-    if (frame >= 6) {
-      edicts.setFloat(ent, f.weaponframe, 0);
-    } else {
-      edicts.setFloat(ent, f.weaponframe, frame + 1);
-    }
+    void ent;
   }
 
   /**
-   * Local W_Attack shotgun stub: ammo, weaponframe anim, sound, hitscan.
-   * @param {number} attackerEnt
-   * @param {Float32Array|number[]} eye
-   * @param {number} pitch deg
-   * @param {number} yaw deg
-   * @returns {boolean} true if shot fired
+   * @deprecated Use QuakeC W_Attack via runClientPostThink (held button0).
    */
-  playerAttack(attackerEnt, eye, pitch, yaw) {
-    const f = this.progs.f;
-    const edicts = this.edicts;
-    if (edicts.free[attackerEnt]) return false;
-    if ((edicts.getFloat(attackerEnt, f.health) | 0) <= 0) return false;
-
-    const af = f.attack_finished;
-    if (af >= 0 && this.time < edicts.getFloat(attackerEnt, af)) return false;
-    if ((edicts.getFloat(attackerEnt, f.weaponframe) | 0) > 0) return false;
-
-    let shells = edicts.getFloat(attackerEnt, f.ammo_shells) | 0;
-    if (shells <= 0) {
-      edicts.setFloat(attackerEnt, f.currentammo, 0);
-      return false;
-    }
-
-    shells -= 1;
-    edicts.setFloat(attackerEnt, f.ammo_shells, shells);
-    edicts.setFloat(attackerEnt, f.currentammo, shells);
-    edicts.setFloat(attackerEnt, f.weaponframe, 1);
-    this._weaponAnimNext = this.time + 0.1;
-    if (af >= 0) edicts.setFloat(attackerEnt, af, this.time + 0.5);
-
-    this.startSound(attackerEnt, 1, 'weapons/guncock.wav', 255, 1);
-    if (this.dlights) {
-      this.dlights.muzzleFlash(eye, pitch, yaw, this.clientTime, attackerEnt);
-    }
-    this.fireHitscan(attackerEnt, eye, pitch, yaw, 20);
-    return true;
+  playerAttack() {
+    return false;
   }
 
   /**
