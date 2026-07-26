@@ -1,9 +1,12 @@
 /**
- * Player walk movement scaffold (sv_user SV_AirMove + sv_phys SV_WalkMove / SV_FlyMove).
- * World-only; no QuakeC / water / entities yet.
+ * Player walk movement scaffold (sv_user SV_AirMove / SV_WaterMove + sv_phys).
  */
 
 import { angleVectors } from '../math/QuakeMath.js';
+import {
+  CONTENTS_EMPTY,
+  CONTENTS_WATER,
+} from './World.js';
 
 const SV_GRAVITY = 800;
 const SV_MAXSPEED = 320;
@@ -87,6 +90,10 @@ export class PlayerMove {
     this.punchangle = new Float32Array(3);
     /** View roll (degrees) from V_CalcRoll */
     this.roll = 0;
+    /** SV_CheckWater — 0..3 */
+    this.waterlevel = 0;
+    /** CONTENTS_* at feet when in liquid */
+    this.watertype = CONTENTS_EMPTY;
   }
 
   /**
@@ -179,12 +186,16 @@ export class PlayerMove {
       this._noclipMove(dt, cmd);
       this._smoothZ = this.origin[2];
       this._bob = 0;
+      this.waterlevel = 0;
+      this.watertype = CONTENTS_EMPTY;
       return;
     }
 
-    // Jump (QuakeC PlayerJump: +270 on button2)
+    this._checkWater();
+
+    // Jump (QuakeC PlayerJump: +270 on button2) — not while fully submerged swim
     if (cmd.jump) {
-      if (this.onground && this.jumpReleased) {
+      if (this.onground && this.jumpReleased && this.waterlevel < 2) {
         this.onground = false;
         this.jumpReleased = false;
         this.velocity[2] += JUMP_IMPULSE;
@@ -193,14 +204,136 @@ export class PlayerMove {
       this.jumpReleased = true;
     }
 
-    this._airMove(dt, cmd);
+    if (this.waterlevel >= 2) {
+      this._waterMove(dt, cmd);
+    } else {
+      this._airMove(dt, cmd);
+      // SV_CheckWater returns waterlevel > 1 — gravity only when not swimming
+      this.velocity[2] -= SV_GRAVITY * dt;
+    }
 
-    // Always apply gravity (sv_phys SV_AddGravity) so we stay welded to floors
-    this.velocity[2] -= SV_GRAVITY * dt;
+    // QuakeC WaterMove velocity drag (PlayerPreThink) — once per frame, not stacked
+    // with a second copy from applyClientEdict after PreThink.
+    if (this.waterlevel > 0) {
+      const drag = 1 - 0.8 * this.waterlevel * dt;
+      if (drag > 0) {
+        this.velocity[0] *= drag;
+        this.velocity[1] *= drag;
+        this.velocity[2] *= drag;
+      }
+    }
 
     this._walkMove(dt);
     this._updateStepSmooth(dt);
     this._updateBob(dt);
+  }
+
+  /**
+   * SV_CheckWater — set waterlevel / watertype from hull contents.
+   */
+  _checkWater() {
+    const mins = PLAYER_MINS;
+    const maxs = PLAYER_MAXS;
+    const point = new Float32Array([
+      this.origin[0],
+      this.origin[1],
+      this.origin[2] + mins[2] + 1,
+    ]);
+    this.waterlevel = 0;
+    this.watertype = CONTENTS_EMPTY;
+    let cont = this.world.pointContents(point);
+    if (cont <= CONTENTS_WATER) {
+      this.watertype = cont;
+      this.waterlevel = 1;
+      point[2] = this.origin[2] + (mins[2] + maxs[2]) * 0.5;
+      cont = this.world.pointContents(point);
+      if (cont <= CONTENTS_WATER) {
+        this.waterlevel = 2;
+        point[2] = this.origin[2] + this.viewOfsZ;
+        cont = this.world.pointContents(point);
+        if (cont <= CONTENTS_WATER) this.waterlevel = 3;
+      }
+    }
+  }
+
+  /**
+   * Eye-point contents for V_SetContentsColor (underwater tint).
+   * @returns {number} CONTENTS_*
+   */
+  eyeContents() {
+    const eye = this.eye();
+    return this.world.pointContents(eye);
+  }
+
+  /**
+   * SV_WaterMove — full 3D swim when waterlevel >= 2.
+   * @param {number} dt
+   * @param {{
+   *   forwardmove?: number, sidemove?: number, upmove?: number,
+   *   jump?: boolean, up?: boolean, down?: boolean,
+   * }} cmd
+   */
+  _waterMove(dt, cmd) {
+    const { forward, right } = angleVectors([this.pitch, this.yaw, 0]);
+    let fmove = cmd.forwardmove !== undefined ? cmd.forwardmove : 0;
+    let smove = cmd.sidemove !== undefined ? cmd.sidemove : 0;
+    let umove = cmd.upmove !== undefined ? cmd.upmove : 0;
+    // Jump / swim-up while in water (button2 → upmove in usercmd)
+    if (cmd.jump || cmd.up) umove = Math.max(umove, SV_MAXSPEED);
+    if (cmd.down) umove = Math.min(umove, -SV_MAXSPEED);
+
+    const wishvel = new Float32Array([
+      forward[0] * fmove + right[0] * smove,
+      forward[1] * fmove + right[1] * smove,
+      forward[2] * fmove + right[2] * smove,
+    ]);
+    if (!fmove && !smove && !umove) {
+      wishvel[2] -= 60; // drift toward bottom
+    } else {
+      wishvel[2] += umove;
+    }
+
+    let wishspeed = Math.hypot(wishvel[0], wishvel[1], wishvel[2]);
+    if (wishspeed > SV_MAXSPEED) {
+      const s = SV_MAXSPEED / wishspeed;
+      wishvel[0] *= s;
+      wishvel[1] *= s;
+      wishvel[2] *= s;
+      wishspeed = SV_MAXSPEED;
+    }
+    wishspeed *= 0.7;
+
+    // Water friction
+    let speed = Math.hypot(
+      this.velocity[0],
+      this.velocity[1],
+      this.velocity[2],
+    );
+    let newspeed = 0;
+    if (speed) {
+      newspeed = speed - dt * speed * SV_FRICTION;
+      if (newspeed < 0) newspeed = 0;
+      const scale = newspeed / speed;
+      this.velocity[0] *= scale;
+      this.velocity[1] *= scale;
+      this.velocity[2] *= scale;
+    }
+
+    // Water acceleration — vanilla uses |velocity| after friction, not projection
+    if (!wishspeed) return;
+    const addspeed = wishspeed - newspeed;
+    if (addspeed <= 0) return;
+    const wl = Math.hypot(wishvel[0], wishvel[1], wishvel[2]) || 1;
+    const wishdir = new Float32Array([
+      wishvel[0] / wl,
+      wishvel[1] / wl,
+      wishvel[2] / wl,
+    ]);
+    let accelspeed = SV_ACCELERATE * wishspeed * dt;
+    if (accelspeed > addspeed) accelspeed = addspeed;
+    this.velocity[0] += accelspeed * wishdir[0];
+    this.velocity[1] += accelspeed * wishdir[1];
+    this.velocity[2] += accelspeed * wishdir[2];
   }
 
   /**
@@ -343,11 +476,10 @@ export class PlayerMove {
 
   /** @param {number} dt */
   _friction(dt) {
-    const speed = Math.hypot(this.velocity[0], this.velocity[1], this.velocity[2]);
-    if (speed < 1) {
-      this.velocity[0] = this.velocity[1] = this.velocity[2] = 0;
-      return;
-    }
+    // SV_UserFriction — speed is horizontal only (vel[2] scaled by same ratio)
+    const speed = Math.hypot(this.velocity[0], this.velocity[1]);
+    if (!speed) return;
+
     const control = speed < SV_STOPSPEED ? SV_STOPSPEED : speed;
     const drop = control * SV_FRICTION * dt;
     let newspeed = speed - drop;

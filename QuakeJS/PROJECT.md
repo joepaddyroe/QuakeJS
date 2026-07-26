@@ -391,6 +391,11 @@ Net (non-loopback)   ████░░░░░░  ~40%   WebSocketNet + ws-re
 - Sky/turb are WebGPU approximations of `gl_warp.c` (no subdivided polys)
 - `DemoRoomRenderer` retained as load-failure fallback
 - Alias/sprite draw prefers `ClientWorld` after `svc_time`; brush ents still from server `getBrushDrawList`
+- Contents color shift via DOM overlay (`#cshift`); no `r_waterwarp` screen warp yet
+
+#### Movement
+- Swim when `waterlevel >= 2` (`SV_WaterMove`); feet-in-water (`level 1`) still uses air move + gravity
+- No `FL_WATERJUMP` ledge hop yet
 
 ### 12.4 Missing entirely (initial backlog)
 
@@ -423,7 +428,7 @@ Use this when choosing what to port next. Goal: **playable Quake 1 single-player
 | P2 | **Physics / hulls** | Partial — world walk | `server/World.js`, `PlayerMove.js` · `world.c`, `sv_phys.c` |
 | P2 | **QuakeC VM + builtins** | Partial — spawn/think/touch | `progs/*`, `Server.js` · `pr_exec.c`, `pr_edict.c`, `pr_cmds.c` |
 | P2 | **Draw brush ents + entity clip** | Done | `WorldRenderer` + `World.brushes` · `SV_ClipMoveToEntity` |
-| P2 | **Changelevel / map load** | Done (no intermission UI) | `Host.changeMap`, builtin #70 · `host_cmd.c` |
+| P2 | **Changelevel / map load** | Done — intermission → fire/jump → next map | `Host.changeMap`, builtin #70 · `client.qc` ExitIntermission |
 | P2 | **Loopback net + SV/CL connect** | Partial — SizeBuf + NetLoop + ClientParse | `net/NetLoop.js`, `client/Client.js` · `net_loop.c`, `cl_parse.c` |
 | P3 | **Alias + view weapon** | Done — all weapons via QC `W_Attack` + client thinks | `AliasRenderer.js`, `Server.runClientPostThink` · `weapons.qc` |
 | P3 | **Status bar + menu + console** | Done — sbar + menu + conback/conchars console | `ui/*` · `sbar.c`, `console.c`, `menu.c`, `draw.c` |
@@ -564,6 +569,8 @@ User supplies a legally obtained Quake `id1` directory (at least `pak0.pak`). Fi
 | 2026-07-26 | **Phase 10 key binds:** `KeyBindings` + `bind`/`unbind`/`bindlist`; defaults (+forward/…/impulse); written into `config.cfg` |
 | 2026-07-26 | **Weapons via QuakeC:** removed JS shotgun stub; client `RunThink` for axe/nail/lightning anims; FLYMISSILE/BOUNCE toss + entity clip; `give all` / `impulse` |
 | 2026-07-26 | **Alias move smooth:** exp-smooth origin/yaw for STEP monsters (dogs `walkmove` ~10 Hz); keeps freefall tracking |
+| 2026-07-26 | **Intermission exit:** stop clobbering QC camera after `execute_changelevel`; keep attack/jump for `ExitIntermission`; ~2s wait then fire/jump → next map (vanilla id1) |
+| 2026-07-26 | **Swim + cshift:** `SV_WaterMove` / waterlevel sync; `ContentsShift` underwater tint (`V_SetContentsColor` water/slime/lava) |
 
 ---
 

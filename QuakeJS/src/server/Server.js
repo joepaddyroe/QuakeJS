@@ -1748,10 +1748,29 @@ export class Server {
   }
 
   /**
+   * Intermission: refresh buttons / view angles without clobbering QC camera origin.
+   * @param {number} ent
+   * @param {{ attack?: boolean, jump?: boolean, pitch?: number, yaw?: number }} buttons
+   */
+  syncClientButtons(ent, buttons = {}) {
+    const f = this.progs.f;
+    const edicts = this.edicts;
+    if (edicts.free[ent]) return;
+    edicts.setFloat(ent, f.button0, buttons.attack ? 1 : 0);
+    edicts.setFloat(ent, f.button1, 0);
+    edicts.setFloat(ent, f.button2, buttons.jump ? 1 : 0);
+    if (buttons.pitch != null || buttons.yaw != null) {
+      const pitch = buttons.pitch || 0;
+      const yaw = buttons.yaw || 0;
+      edicts.setVec(ent, f.v_angle, [pitch, yaw, 0]);
+    }
+  }
+
+  /**
    * Mirror local player into reserved client edict (svs.clients[0] → edict 1).
    * QuakeC teleports/triggers require classname "player", health > 0, SOLID_SLIDEBOX.
    * @param {number} ent
-   * @param {{ origin: Float32Array|number[], velocity?: Float32Array|number[], pitch?: number, yaw?: number, mins?: Float32Array|number[], maxs?: Float32Array|number[], health?: number, onground?: boolean, groundEntity?: number, viewOfsZ?: number }} player
+   * @param {{ origin: Float32Array|number[], velocity?: Float32Array|number[], pitch?: number, yaw?: number, mins?: Float32Array|number[], maxs?: Float32Array|number[], health?: number, onground?: boolean, groundEntity?: number, viewOfsZ?: number, waterlevel?: number, watertype?: number }} player
    */
   syncClientEdict(ent, player) {
     const f = this.progs.f;
@@ -1768,8 +1787,14 @@ export class Server {
     if (player.maxs) edicts.setVec(ent, f.maxs, player.maxs);
     edicts.setVec(ent, f.angles, [0, player.yaw || 0, 0]);
     edicts.setVec(ent, f.v_angle, [player.pitch || 0, player.yaw || 0, 0]);
-    edicts.setFloat(ent, f.movetype, MOVETYPE_WALK);
-    edicts.setFloat(ent, f.solid, SOLID_SLIDEBOX);
+    // Don't stomp QC intermission pose (MOVETYPE_NONE / view_ofs 0 / SOLID_NOT)
+    if (!this.isIntermission()) {
+      edicts.setFloat(ent, f.movetype, MOVETYPE_WALK);
+      edicts.setFloat(ent, f.solid, SOLID_SLIDEBOX);
+      const viewZ =
+        player.viewOfsZ != null && player.viewOfsZ !== 0 ? player.viewOfsZ : 22;
+      edicts.setVec(ent, f.view_ofs, [0, 0, viewZ]);
+    }
     // After PutClientInServer, QC owns health/items — do not clobber each frame
     if (!this._clientSpawned) {
       edicts.setFloat(ent, f.health, player.health ?? 100);
@@ -1783,11 +1808,13 @@ export class Server {
     if (player.onground) flags |= FL_ONGROUND;
     else flags &= ~FL_ONGROUND;
     edicts.setFloat(ent, f.flags, flags);
-    // Eye height for monster checkclient / visible()
-    const viewZ =
-      player.viewOfsZ != null && player.viewOfsZ !== 0 ? player.viewOfsZ : 22;
-    edicts.setVec(ent, f.view_ofs, [0, 0, viewZ]);
     edicts.setInt(ent, f.groundentity, player.groundEntity | 0);
+    if (f.waterlevel != null && player.waterlevel != null) {
+      edicts.setFloat(ent, f.waterlevel, player.waterlevel | 0);
+    }
+    if (f.watertype != null && player.watertype != null) {
+      edicts.setFloat(ent, f.watertype, player.watertype | 0);
+    }
     if (!this._clientSpawned) this._ensureClientLoadout(ent);
     edicts.linkAbs(ent);
   }
@@ -1900,10 +1927,12 @@ export class Server {
   /**
    * Copy QC-side changes (teleport setorigin / fixangle / velocity) back to the local player.
    * @param {number} ent
-   * @param {{ origin: Float32Array, velocity: Float32Array, pitch: number, yaw: number, onground: boolean, _smoothZ?: number }} player
+   * @param {{ origin: Float32Array, velocity: Float32Array, pitch: number, yaw: number, onground: boolean, _smoothZ?: number, viewOfsZ?: number }} player
+   * @param {{ velocity?: boolean }} [opts] velocity=false skips edict→player velocity (local PlayerMove owns it)
    * @returns {{ fixangle: boolean, pitch: number, yaw: number }}
    */
-  applyClientEdict(ent, player) {
+  applyClientEdict(ent, player, opts = {}) {
+    const copyVel = opts.velocity !== false;
     const f = this.progs.f;
     const edicts = this.edicts;
     const o = edicts.getVec(ent, f.origin);
@@ -1915,10 +1944,12 @@ export class Server {
     player.origin[1] = o[1];
     player.origin[2] = o[2];
     if (teleported && '_smoothZ' in player) player._smoothZ = o[2];
-    const vel = edicts.getVec(ent, f.velocity);
-    player.velocity[0] = vel[0];
-    player.velocity[1] = vel[1];
-    player.velocity[2] = vel[2];
+    if (copyVel) {
+      const vel = edicts.getVec(ent, f.velocity);
+      player.velocity[0] = vel[0];
+      player.velocity[1] = vel[1];
+      player.velocity[2] = vel[2];
+    }
     player.onground = !!(edicts.getFloat(ent, f.flags) & FL_ONGROUND);
 
     const fix = edicts.getFloat(ent, f.fixangle) | 0;
@@ -1933,6 +1964,11 @@ export class Server {
       player.yaw = yaw;
       edicts.setVec(ent, f.v_angle, [pitch, yaw, 0]);
       edicts.setFloat(ent, f.fixangle, 0);
+    }
+    // execute_changelevel sets view_ofs to 0 for intermission camera
+    if ('viewOfsZ' in player) {
+      const vo = edicts.getVec(ent, f.view_ofs);
+      player.viewOfsZ = vo[2];
     }
     return { fixangle: !!fix, pitch, yaw };
   }

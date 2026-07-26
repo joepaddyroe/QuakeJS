@@ -15,6 +15,7 @@ import { WebGpuRenderer } from './render/WebGpuRenderer.js';
 import { StatusBar } from './ui/StatusBar.js';
 import { Menu } from './ui/Menu.js';
 import { ScreenOverlay } from './ui/ScreenOverlay.js';
+import { ContentsShift } from './ui/ContentsShift.js';
 import { Console } from './ui/Console.js';
 
 /**
@@ -119,6 +120,8 @@ async function main() {
     console.warn('Screen overlay load failed:', err);
   }
 
+  const cshift = new ContentsShift(document.getElementById('cshift'));
+
   const consoleUi = new Console(consoleCanvas);
   try {
     await consoleUi.load(fs);
@@ -140,6 +143,7 @@ async function main() {
     sound,
     menu,
     overlay,
+    cshift,
     console: consoleUi,
     cd,
   });

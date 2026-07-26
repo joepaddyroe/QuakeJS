@@ -34,6 +34,7 @@ export class Host {
    * @param {import('../audio/SoundSystem.js').SoundSystem} [deps.sound]
    * @param {import('../ui/Menu.js').Menu} [deps.menu]
    * @param {import('../ui/ScreenOverlay.js').ScreenOverlay} [deps.overlay]
+   * @param {import('../ui/ContentsShift.js').ContentsShift} [deps.cshift]
    * @param {import('../ui/Console.js').Console} [deps.console]
    * @param {import('../audio/CdAudio.js').CdAudio} [deps.cd]
    */
@@ -48,6 +49,7 @@ export class Host {
     sound = null,
     menu = null,
     overlay = null,
+    cshift = null,
     console: consoleUi = null,
     cd = null,
   }) {
@@ -61,6 +63,7 @@ export class Host {
     this._sound = sound;
     this._menu = menu;
     this._overlay = overlay;
+    this._cshift = cshift;
     this._cd = cd || new CdAudio();
     this._fpsAccum = 0;
     this._fpsFrames = 0;
@@ -179,8 +182,10 @@ export class Host {
     window.addEventListener('keydown', this._onKeyDown, true);
 
     // Esc while pointer-locked is eaten by the browser — open menu on unlock
+    // (but not during intermission: fire/jump must reach QC ExitIntermission)
     this._pointer.onUserUnlock = () => {
       if (this.con.isOpen) return;
+      if (this._renderer.server?.isIntermission()) return;
       if (this._menu && !this._menu.isOpen) this.openMenu();
     };
 
@@ -866,6 +871,8 @@ export class Host {
     if (!this._fs.has(path)) {
       this.con.print(`map not found: ${path}\n`);
       console.error(`[host] map not found: ${path}`);
+      // Allow another ExitIntermission → changelevel attempt
+      if (this._renderer.server) this._renderer.server._changelevelIssued = false;
       return;
     }
     if (this._mapLoading) return;
@@ -877,6 +884,7 @@ export class Host {
     try {
       if (this._overlay) await this._overlay.waitForPaint();
       this._menu?.close();
+      this._cshift?.clear();
       this._renderer.loadMap(this._fs, path, this._sound);
       const server = this._renderer.server;
       if (server && this._pendingSave) {
@@ -887,6 +895,12 @@ export class Host {
       }
       this.syncPointerFromCamera();
       this._connectLoopback();
+    } catch (err) {
+      this.con.print(
+        `map load failed: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+      if (this._renderer.server) this._renderer.server._changelevelIssued = false;
+      throw err;
     } finally {
       this._overlay?.hideLoading();
       this._mapLoading = false;
@@ -947,7 +961,16 @@ export class Host {
     if (sens > 0) this._pointer.sensitivity = 0.04 * sens;
 
     const intermission = !!(server && server.isIntermission());
-    const mv = this._sampleMove(uiBlocking || intermission);
+    // Keep attack/jump during intermission — QC IntermissionThink needs button0/2
+    // (vanilla: wait intermission_exittime ~2s SP, then fire/jump → ExitIntermission)
+    const mv = this._sampleMove(uiBlocking);
+    if (intermission) {
+      mv.forwardmove = 0;
+      mv.sidemove = 0;
+      mv.upmove = 0;
+      mv.yawDelta = 0;
+      mv.pitchDelta = 0;
+    }
     const attack = mv.attack;
     const jump = mv.jump;
 
@@ -979,17 +1002,30 @@ export class Host {
       if (server) {
         const cmdButtons = server.lastCmd.buttons;
         const frameDt = Math.min(dt, 0.1);
-        server.syncClientEdict(1, {
-          origin: player.origin,
-          velocity: player.velocity,
-          pitch: this._pointer.pitch,
-          yaw: this._pointer.yaw,
-          mins: PLAYER_MINS,
-          maxs: PLAYER_MAXS,
-          onground: player.onground,
-          groundEntity: player.groundEntity,
-          viewOfsZ: player.viewOfsZ,
-        });
+        if (!intermission) {
+          // Live play: push local PlayerMove into the client edict
+          server.syncClientEdict(1, {
+            origin: player.origin,
+            velocity: player.velocity,
+            pitch: this._pointer.pitch,
+            yaw: this._pointer.yaw,
+            mins: PLAYER_MINS,
+            maxs: PLAYER_MAXS,
+            onground: player.onground,
+            groundEntity: player.groundEntity,
+            viewOfsZ: player.viewOfsZ,
+            waterlevel: player.waterlevel,
+            watertype: player.watertype,
+          });
+        } else {
+          // Intermission: QC owns origin/view — only refresh buttons
+          server.syncClientButtons(1, {
+            attack: !!(cmdButtons & 1) || attack,
+            jump: !!(cmdButtons & 2) || jump,
+            pitch: this._pointer.pitch,
+            yaw: this._pointer.yaw,
+          });
+        }
         server.runClientThink(
           1,
           {
@@ -998,7 +1034,16 @@ export class Host {
           },
           frameDt,
         );
-        server.applyClientEdict(1, player);
+        // PreThink WaterMove damps edict velocity — do not pull that onto
+        // local PlayerMove (would stack with SV_WaterMove and crawl after exit).
+        // Still take teleports / fixangle / view_ofs.
+        const appliedPre = server.applyClientEdict(1, player, {
+          velocity: false,
+        });
+        if (appliedPre.fixangle) {
+          this._pointer.yaw = appliedPre.yaw;
+          this._pointer.pitch = appliedPre.pitch;
+        }
       }
 
       if (!intermission) {
@@ -1040,12 +1085,18 @@ export class Host {
             onground: player.onground,
             groundEntity: player.groundEntity,
             viewOfsZ: player.viewOfsZ,
+            waterlevel: player.waterlevel,
+            watertype: player.watertype,
           });
           server.impactTouches(1, player.impactedEdicts);
           server.bumpOpenDoors(1, player.impactedEdicts);
         }
-        server.physics(frameDt, player);
-        if (!intermission) {
+        // null player during intermission — don't ride plats / clobber QC camera
+        server.physics(frameDt, server.isIntermission() ? null : player);
+
+        // Re-check: execute_changelevel may have just started intermission this frame
+        const nowIntermission = server.isIntermission();
+        if (!nowIntermission) {
           server.syncClientEdict(1, {
             origin: player.origin,
             velocity: player.velocity,
@@ -1056,6 +1107,8 @@ export class Host {
             onground: player.onground,
             groundEntity: player.groundEntity,
             viewOfsZ: player.viewOfsZ,
+            waterlevel: player.waterlevel,
+            watertype: player.watertype,
           });
           server.touchTriggers(player.origin, PLAYER_MINS, PLAYER_MAXS, 1);
           const applied = server.applyClientEdict(1, player);
@@ -1065,6 +1118,13 @@ export class Host {
           }
           // W_WeaponFrame / ImpulseCommands / W_Attack (all weapons via QuakeC)
           server.runClientPostThink(1);
+        } else {
+          // Pull intermission camera / view_ofs=0 / fixangle — never push origin back
+          const applied = server.applyClientEdict(1, player);
+          if (applied.fixangle) {
+            this._pointer.yaw = applied.yaw;
+            this._pointer.pitch = applied.pitch;
+          }
         }
       }
     } else if (!uiBlocking) {
@@ -1086,7 +1146,7 @@ export class Host {
       if (this._renderer.collision) {
         this._renderer.collision.brushes = server.getBrushDrawList();
       }
-      server.physics(frameDt, player);
+      server.physics(frameDt, server.isIntermission() ? null : player);
     }
 
     if (server) {
@@ -1108,6 +1168,21 @@ export class Host {
     this._cd.update();
     this._overlay?.frame(dt);
 
+    // V_SetContentsColor — underwater / slime / lava tint
+    if (this._cshift) {
+      if (
+        worldMode &&
+        player &&
+        server &&
+        !server.isIntermission() &&
+        !menuOpen
+      ) {
+        this._cshift.setContents(player.eyeContents());
+      } else {
+        this._cshift.clear();
+      }
+    }
+
     this._renderer.frame(width, height, dt);
 
     if (this._sound && worldMode && player) {
@@ -1123,6 +1198,7 @@ export class Host {
     if (this._menu) this._menu.frame(dt);
     this.con.frame(dt);
 
+    const interNow = !!(server && server.isIntermission());
     const interInfo = server ? server.getIntermissionInfo() : null;
     if (this._overlay) {
       if (!this._overlay.isLoading) {
@@ -1132,7 +1208,7 @@ export class Host {
 
     if (this._statusBar) {
       const stats =
-        worldMode && server && !intermission && !menuOpen && !interInfo?.active
+        worldMode && server && !interNow && !menuOpen && !interInfo?.active
           ? server.getClientStats(1)
           : null;
       this._statusBar.draw(stats);
@@ -1151,10 +1227,10 @@ export class Host {
       return;
     }
 
-    if (intermission) {
+    if (interNow) {
       this._hud.textContent =
         `Level complete\n` +
-        `click / jump to continue`;
+        `wait a moment, then fire or jump`;
       return;
     }
 
@@ -1164,10 +1240,10 @@ export class Host {
 
     if (worldMode && player) {
       const eye = player.eye();
-      const mode = intermission
-        ? 'INTERMISSION'
-        : player.noclip
-          ? 'NOCLIP'
+      const mode = player.noclip
+        ? 'NOCLIP'
+        : player.waterlevel >= 2
+          ? 'swim'
           : player.onground
             ? 'walk'
             : 'air';
@@ -1181,9 +1257,7 @@ export class Host {
           ? `gun ${this._renderer.viewWeapon}\n`
           : '') +
         `\n` +
-        (intermission
-          ? `Level complete — click / jump to continue\n`
-          : `WASD move   Space jump   click shoot   Esc menu   \` console\n`) +
+        `WASD move   Space jump/swim-up   click shoot   Esc menu   \` console\n` +
         `${lockHint}`;
     } else {
       this._hud.textContent =

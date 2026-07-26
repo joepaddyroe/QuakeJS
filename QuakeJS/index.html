@@ -81,6 +81,14 @@
       display: none;
       z-index: 12;
     }
+    /* V_SetContentsColor — underwater / slime / lava tint */
+    #cshift {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 5;
+      display: none;
+    }
     #hud .dim { color: #7a766c; }
     #error {
       display: none;
@@ -100,6 +108,7 @@
 </head>
 <body>
   <canvas id="viewport"></canvas>
+  <div id="cshift"></div>
   <canvas id="sbar"></canvas>
   <canvas id="overlay"></canvas>
   <canvas id="menu"></canvas>
