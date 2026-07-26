@@ -51,7 +51,15 @@ fn fsMain(input : VSOut) -> @location(0) vec4f {
 const MAT4_BYTES = 64;
 
 /**
- * @typedef {{ model: string, origin: Float32Array, yaw: number, frame: number }} AliasDrawEnt
+ * @typedef {{
+ *   model: string,
+ *   origin: Float32Array,
+ *   yaw: number,
+ *   frame: number,
+ *   id?: number|string,
+ *   oldframe?: number,
+ *   blend?: number,
+ * }} AliasDrawEnt
  */
 
 export class AliasRenderer {
@@ -80,6 +88,24 @@ export class AliasRenderer {
     /** @type {GPUBuffer|null} */
     this._matrixStaging = null;
     this._matrixStagingCapacity = 0;
+    /** Scratch VBOs for lerped frames (one per draw slot, resized as needed) */
+    /** @type {GPUBuffer[]} */
+    this._lerpVbos = [];
+    /** @type {Map<string|number, { frame: number, oldframe: number, start: number }>} */
+    this._anim = new Map();
+    /**
+     * Origin/yaw smoothing for STEP monsters (walkmove jumps ~10 Hz).
+     * @type {Map<string|number, {
+     *   x: number, y: number, z: number, yaw: number, last: number,
+     * }>}
+     */
+    this._move = new Map();
+    /** Client/render clock for frame blend */
+    this._time = 0;
+    /** Pose blend duration (matches typical monster nextthink) */
+    this._lerpTime = 0.1;
+    /** Exp-smooth time constant for origin/yaw (seconds) */
+    this._moveSmoothTau = 0.07;
     /** @type {import('../fs/FileSystem.js').FileSystem|null} */
     this._fs = null;
     /** @type {Uint8Array|null} */
@@ -218,6 +244,8 @@ export class AliasRenderer {
       for (const fr of entry.frameCache.values()) fr.vbo.destroy();
     }
     this._cache.clear();
+    this._anim.clear();
+    this._move.clear();
   }
 
   /**
@@ -295,6 +323,113 @@ export class AliasRenderer {
   }
 
   /**
+   * Resolve pose blend for an entity (tracks previous frame over time).
+   * @param {AliasDrawEnt} ent
+   * @returns {{ frame0: number, frame1: number, blend: number }}
+   */
+  _poseBlend(ent) {
+    const frame1 = ent.frame | 0;
+    if (ent.blend != null && ent.oldframe != null) {
+      return {
+        frame0: ent.oldframe | 0,
+        frame1,
+        blend: ent.blend,
+      };
+    }
+    const key = ent.id != null ? ent.id : ent.model;
+    let s = this._anim.get(key);
+    if (!s) {
+      s = { frame: frame1, oldframe: frame1, start: this._time };
+      this._anim.set(key, s);
+    } else if (frame1 !== s.frame) {
+      s.oldframe = s.frame;
+      s.frame = frame1;
+      s.start = this._time;
+    }
+    const blend = Math.min(
+      1,
+      Math.max(0, (this._time - s.start) / this._lerpTime),
+    );
+    return { frame0: s.oldframe, frame1: s.frame, blend };
+  }
+
+  /**
+   * Smooth origin/yaw toward server pose (handles walkmove steps + freefall).
+   * @param {AliasDrawEnt} ent
+   * @returns {{ origin: Float32Array, yaw: number }}
+   */
+  _smoothMove(ent) {
+    const key = ent.id != null ? ent.id : ent.model;
+    const ox = ent.origin[0];
+    const oy = ent.origin[1];
+    const oz = ent.origin[2];
+    const yaw = ent.yaw || 0;
+    let s = this._move.get(key);
+    if (!s) {
+      s = { x: ox, y: oy, z: oz, yaw, last: this._time };
+      this._move.set(key, s);
+      return {
+        origin: new Float32Array([ox, oy, oz]),
+        yaw,
+      };
+    }
+
+    const dist = Math.hypot(ox - s.x, oy - s.y, oz - s.z);
+    if (dist > 80) {
+      // Teleport — snap
+      s.x = ox;
+      s.y = oy;
+      s.z = oz;
+      s.yaw = yaw;
+      s.last = this._time;
+      return {
+        origin: new Float32Array([ox, oy, oz]),
+        yaw,
+      };
+    }
+
+    let dt = this._time - s.last;
+    if (dt < 0) dt = 0;
+    if (dt > 0.1) dt = 0.1;
+    s.last = this._time;
+    // 1 - e^(-dt/tau): settles in ~3τ, tracks 10 Hz steps without hitching
+    const a =
+      dt <= 0 ? 1 : 1 - Math.exp(-dt / Math.max(0.001, this._moveSmoothTau));
+    s.x += (ox - s.x) * a;
+    s.y += (oy - s.y) * a;
+    s.z += (oz - s.z) * a;
+    let dyaw = yaw - s.yaw;
+    if (dyaw > 180) dyaw -= 360;
+    else if (dyaw < -180) dyaw += 360;
+    s.yaw += dyaw * a;
+
+    return {
+      origin: new Float32Array([s.x, s.y, s.z]),
+      yaw: s.yaw,
+    };
+  }
+
+  /**
+   * @param {number} slot
+   * @param {Float32Array} data
+   * @returns {{ vbo: GPUBuffer, vertCount: number }}
+   */
+  _uploadLerpMesh(slot, data) {
+    const bytes = Math.max(4, data.byteLength);
+    let vbo = this._lerpVbos[slot];
+    if (!vbo || vbo.size < bytes) {
+      vbo?.destroy();
+      vbo = this._device.createBuffer({
+        size: bytes,
+        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+      });
+      this._lerpVbos[slot] = vbo;
+    }
+    if (data.byteLength) this._device.queue.writeBuffer(vbo, 0, data);
+    return { vbo, vertCount: (data.length / 5) | 0 };
+  }
+
+  /**
    * @param {GPUCommandEncoder} encoder
    * @param {GPUTextureView} colorView
    * @param {GPUTextureView} depthView
@@ -302,9 +437,11 @@ export class AliasRenderer {
    * @param {number} width
    * @param {number} height
    * @param {AliasDrawEnt[]} ents
+   * @param {number} [time]
    */
-  draw(encoder, colorView, depthView, camera, width, height, ents) {
+  draw(encoder, colorView, depthView, camera, width, height, ents, time) {
     if (!this._pipeline || !ents.length) return;
+    if (time != null) this._time = time;
 
     const aspect = width / Math.max(1, height);
     const proj = mat4Perspective((90 * Math.PI) / 180, aspect, 1, 8192);
@@ -313,14 +450,28 @@ export class AliasRenderer {
 
     /** @type {{ entry: NonNullable<ReturnType<AliasRenderer['_getEntry']>>, mesh: { vbo: GPUBuffer, vertCount: number }, matrix: Float32Array }[]} */
     const draws = [];
+    let lerpSlot = 0;
     for (const ent of ents) {
       const entry = this._getEntry(ent.model);
       if (!entry) continue;
-      const mesh = this._meshForFrame(entry, ent.frame);
+      const pose = this._poseBlend(ent);
+      const move = this._smoothMove(ent);
+      /** @type {{ vbo: GPUBuffer, vertCount: number }} */
+      let mesh;
+      if (pose.blend > 0 && pose.blend < 1 && pose.frame0 !== pose.frame1) {
+        const data = entry.model.buildMeshLerped(
+          pose.frame0,
+          pose.frame1,
+          pose.blend,
+        );
+        mesh = this._uploadLerpMesh(lerpSlot++, data);
+      } else {
+        mesh = this._meshForFrame(entry, pose.frame1);
+      }
       if (!mesh.vertCount) continue;
-      const yaw = (ent.yaw * Math.PI) / 180;
+      const yaw = (move.yaw * Math.PI) / 180;
       const model = mat4Multiply(
-        mat4Translate(ent.origin[0], ent.origin[1], ent.origin[2]),
+        mat4Translate(move.origin[0], move.origin[1], move.origin[2]),
         mat4RotateZ(yaw),
       );
       draws.push({
@@ -437,6 +588,10 @@ export class AliasRenderer {
       for (const fr of entry.frameCache.values()) fr.vbo.destroy();
     }
     this._cache.clear();
+    this._anim.clear();
+    this._move.clear();
+    for (const vbo of this._lerpVbos) vbo.destroy();
+    this._lerpVbos.length = 0;
     this._uniform?.destroy();
     this._viewUniform?.destroy();
     this._matrixStaging?.destroy();

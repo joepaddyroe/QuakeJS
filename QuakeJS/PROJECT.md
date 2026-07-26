@@ -563,7 +563,7 @@ User supplies a legally obtained Quake `id1` directory (at least `pak0.pak`). Fi
 | 2026-07-26 | **Phase 10 client draw:** alias/sprite lists from `ClientWorld` + model precache; `msgtime` cull; view weapon from clientdata; server fallback pre-signon |
 | 2026-07-26 | **Phase 10 key binds:** `KeyBindings` + `bind`/`unbind`/`bindlist`; defaults (+forward/…/impulse); written into `config.cfg` |
 | 2026-07-26 | **Weapons via QuakeC:** removed JS shotgun stub; client `RunThink` for axe/nail/lightning anims; FLYMISSILE/BOUNCE toss + entity clip; `give all` / `impulse` |
-| 2026-07-26 | **Demo polish:** CL_RelinkEntities lerp + viewangles; fix `_smoothZ` on elevators; client brush list for plats; explosion particle ramps (r_part.c) |
+| 2026-07-26 | **Alias move smooth:** exp-smooth origin/yaw for STEP monsters (dogs `walkmove` ~10 Hz); keeps freefall tracking |
 
 ---
 

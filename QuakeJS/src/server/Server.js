@@ -1973,6 +1973,7 @@ export class Server {
       const ang = edicts.getVec(e, f.angles);
       const frame = edicts.getFloat(e, f.frame) | 0;
       out.push({
+        id: e,
         model,
         origin: new Float32Array([o[0], o[1], o[2]]),
         yaw: ang[1] || 0,

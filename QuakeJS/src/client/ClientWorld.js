@@ -245,6 +245,7 @@ export class ClientWorld {
         yaw = bobjrotate;
       }
       out.push({
+        id: i,
         model,
         origin: new Float32Array([ent.origin[0], ent.origin[1], ent.origin[2]]),
         yaw,

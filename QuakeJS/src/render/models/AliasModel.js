@@ -186,8 +186,26 @@ export class AliasModel {
    * @returns {Float32Array}
    */
   buildMesh(frame) {
-    const fr = this.frames[frame | 0] || this.frames[0];
-    if (!fr) return new Float32Array(0);
+    return this.buildMeshLerped(frame, frame, 1);
+  }
+
+  /**
+   * Vertex lerp between two poses (r_lerpmodels / Quakespasm-style).
+   * @param {number} frame0 previous pose
+   * @param {number} frame1 current pose
+   * @param {number} blend 0 = frame0, 1 = frame1
+   * @returns {Float32Array}
+   */
+  buildMeshLerped(frame0, frame1, blend) {
+    const n = this.frames.length;
+    if (!n) return new Float32Array(0);
+    const i0 = Math.max(0, Math.min(n - 1, frame0 | 0));
+    const i1 = Math.max(0, Math.min(n - 1, frame1 | 0));
+    const fr0 = this.frames[i0];
+    const fr1 = this.frames[i1];
+    if (!fr0 || !fr1) return new Float32Array(0);
+    const b = blend <= 0 ? 0 : blend >= 1 ? 1 : blend;
+    const same = i0 === i1 || b >= 1;
     const halfW = this.skinWidth * 0.5;
     const out = new Float32Array(this.numTris * 3 * 5);
     let w = 0;
@@ -198,9 +216,16 @@ export class AliasModel {
         let s = st.s;
         const t = st.t;
         if (!tri.facesFront && st.onseam) s += halfW;
-        out[w++] = fr[vi * 3];
-        out[w++] = fr[vi * 3 + 1];
-        out[w++] = fr[vi * 3 + 2];
+        const o = vi * 3;
+        if (same) {
+          out[w++] = fr1[o];
+          out[w++] = fr1[o + 1];
+          out[w++] = fr1[o + 2];
+        } else {
+          out[w++] = fr0[o] + (fr1[o] - fr0[o]) * b;
+          out[w++] = fr0[o + 1] + (fr1[o + 1] - fr0[o + 1]) * b;
+          out[w++] = fr0[o + 2] + (fr1[o + 2] - fr0[o + 2]) * b;
+        }
         out[w++] = (s + 0.5) / this.skinWidth;
         out[w++] = (t + 0.5) / this.skinHeight;
       }

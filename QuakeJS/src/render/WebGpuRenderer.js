@@ -218,6 +218,7 @@ export class WebGpuRenderer {
           width,
           height,
           aliases,
+          this._time,
         );
         this._spriteRend.draw(
           encoder,
