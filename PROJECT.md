@@ -8,21 +8,20 @@ Canonical instructions for building and maintaining this port. **Read this file 
 |------|------|
 | **`PROJECT.md` (this file)** | Living source of truth — status, roadmap, conventions, changelog. **Update on every port milestone.** |
 | **`README.md`** | User-facing overview: what it is, how to run, folder layout. **Do not sync from this file.** Only edit README when something user-facing or structural changes drastically. |
-| **`../README.md`** | Short pointer at the repo root → `QuakeJS/`. |
 
 **Reference sources (read-only — never edit):**
 
 | Tree | Role |
 |------|------|
-| `../Quake-master/WinQuake/` | **Primary** — WinQuake / GLQuake engine (`host.c`, `sv_*`, `cl_*`, `pr_*`, `gl_*`, `r_*`, …) |
-| `../Quake-master/QW/` | QuakeWorld client/server (net play later; not Phase 0–4) |
-| `../Quake-master/qw-qc/` | QuakeC sources for QW progs (reference only; game logic ships as `progs.dat` in PAK) |
+| `Quake-master/WinQuake/` | **Primary** — WinQuake / GLQuake engine (`host.c`, `sv_*`, `cl_*`, `pr_*`, `gl_*`, `r_*`, …) |
+| `Quake-master/QW/` | QuakeWorld client/server (net play later; not Phase 0–4) |
+| `Quake-master/qw-qc/` | QuakeC sources for QW progs (reference only; game logic ships as `progs.dat` in PAK) |
 
 ### Source of truth (mandatory)
 
 | Question | Answer |
 |----------|--------|
-| Game behaviour, protocols, physics, QuakeC builtins, map/model formats | **WinQuake C only** (`../Quake-master/WinQuake/`) |
+| Game behaviour, protocols, physics, QuakeC builtins, map/model formats | **WinQuake C only** (`Quake-master/WinQuake/`) |
 | Step order, SOLID layers, `PROJECT.md` style, thin `index.html` | DoomJS / Duke ports were a **process template only** |
 | GPU presentation | **WebGPU** (browser); architecture follows **GLQuake** (`gl_*.c`), not the software `r_*` / `d_*` span/edge pipeline |
 
@@ -32,7 +31,7 @@ Canonical instructions for building and maintaining this port. **Read this file 
 
 Before changing server physics, client parse, QuakeC, BSP/PVS, or render math:
 
-1. **Open the matching C function first** in `../Quake-master/WinQuake/` (usually `sv_phys.c`, `world.c`, `cl_parse.c`, `pr_cmds.c`, `gl_rmain.c` / `r_main.c`).
+1. **Open the matching C function first** in `Quake-master/WinQuake/` (usually `sv_phys.c`, `world.c`, `cl_parse.c`, `pr_cmds.c`, `gl_rmain.c` / `r_main.c`).
 2. **Diff call order, globals, and edge cases** — not just the “idea” of the algorithm. Half-ports of Quake (wrong `frametime` clamps, missing `SV_CheckVelocity`, broken `Mod_LeafPVS`, invented lighting) often look plausible and then break maps.
 3. **Prefer a smaller, verified subset** over a speculative rewrite. If the full C path cannot be matched yet, leave the known-good approx and document the gap in **§12**.
 4. **Do not invent fixes** (flip plane signs, change bbox mins/maxs, “simplify” QuakeC) without citing the C lines you are matching.
@@ -165,9 +164,11 @@ When porting a C function, identify which **class owns the data** it mutates (ed
 ## 4. Directory layout (target)
 
 ```
-QuakeJS/
+.                          # repo root (GitHub Pages serves from here)
 ├── index.html
 ├── PROJECT.md
+├── .nojekyll
+├── Quake-master/          # local reference only (gitignored)
 ├── src/
 │   ├── main.js                 # Composition root
 │   ├── app/
@@ -248,7 +249,7 @@ Phase 0 only creates the shell folders and platform/app/core stubs.
 
 ## 6. Porting workflow
 
-1. Locate C source in `../Quake-master/WinQuake/`
+1. Locate C source in `Quake-master/WinQuake/`
 2. Identify data ownership (globals → instance fields on Host / Server / Client / Progs)
 3. Design JS class/interface
 4. Port one vertical slice (e.g. PAK → load BSP → clear WebGPU frame with palette clear color)
@@ -571,6 +572,7 @@ User supplies a legally obtained Quake `id1` directory (at least `pak0.pak`). Fi
 | 2026-07-26 | **Alias move smooth:** exp-smooth origin/yaw for STEP monsters (dogs `walkmove` ~10 Hz); keeps freefall tracking |
 | 2026-07-26 | **Intermission exit:** stop clobbering QC camera after `execute_changelevel`; keep attack/jump for `ExitIntermission`; ~2s wait then fire/jump → next map (vanilla id1) |
 | 2026-07-26 | **Swim + cshift:** `SV_WaterMove` / waterlevel sync; `ContentsShift` underwater tint (`V_SetContentsColor` water/slime/lava) |
+| 2026-07-27 | **Repo root serve:** moved app (`index.html`, `src/`, …) to git root for GitHub Pages; added `.nojekyll`; `Quake-master/` stays local reference |
 
 ---
 
@@ -601,4 +603,4 @@ User supplies a legally obtained Quake `id1` directory (at least `pak0.pak`). Fi
 | `SCR_UpdateScreen` | `screen.c` / `gl_screen.c` | Compose + present |
 | `S_Update` | `snd_dma.c` | Mix audio |
 
-Always verify against these files in `../Quake-master/WinQuake/` — they are authoritative.
+Always verify against these files in `Quake-master/WinQuake/` — they are authoritative.

@@ -1,4 +1,10 @@
-﻿QuakeJS/assets/id1/PAK1.PAK
-QuakeJS/assets/id1/config.cfg
-QuakeJS/assets/id1/PAK0.PAK
+﻿node_modules/
+package-lock.json
+
+# Commercial Quake data (user-supplied; do not commit)
+assets/id1/*.PAK
+assets/id1/*.pak
+assets/id1/config.cfg
+
+# Vanilla reference tree (local only)
 Quake-master
